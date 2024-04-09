@@ -1,16 +1,15 @@
-import 'package:control_flow_graph/src/cfg.dart';
+import 'package:control_flow_graph/src/types.dart';
 import 'package:more/graph.dart';
 
-Map<int, int> computeDominators(ControlFlowGraph cfg) {
-  final graph = cfg.graph, root = cfg.root, rid = root.id!;
-  final postorder = graph.depthFirstPostOrder(rid).toList();
+Map<int, int> computeDominators(CFG graph, int root) {
+  final postorder = graph.depthFirstPostOrder(root).toList();
   var i = 0;
   final postorderNumber = <int, int>{for (final node in postorder) node: i++};
   final reversePostorder = postorder.reversed.toList();
 
   final doms = <int, int?>{for (final node in reversePostorder) node: null};
 
-  doms[rid] = rid;
+  doms[root] = root;
 
   int? intersect(int? n1, int? n2) {
     int? finger1 = n1;
@@ -29,7 +28,7 @@ Map<int, int> computeDominators(ControlFlowGraph cfg) {
   var changed = true;
   while (changed) {
     for (final node in reversePostorder) {
-      if (node == rid) {
+      if (node == root) {
         continue;
       }
       changed = false;

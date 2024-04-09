@@ -5,7 +5,7 @@ import 'package:control_flow_graph/src/ssa.dart';
 /// specify which variables it reads from and writes to.
 class Operation {
   /// The set of variables that are written to by this operation.
-  Set<SSA> get writesTo => {};
+  SSA? get writesTo => null;
 
   /// The set of variables that are read from by this operation.
   Set<SSA> get readsFrom => {};
@@ -29,7 +29,7 @@ class PhiNode extends Operation {
   Set<SSA> get readsFrom => sources;
 
   @override
-  Set<SSA> get writesTo => {target};
+  SSA? get writesTo => target;
 
   @override
   String toString() {

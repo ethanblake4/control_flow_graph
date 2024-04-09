@@ -3,6 +3,7 @@ import 'package:control_flow_graph/src/builder.dart';
 import 'package:control_flow_graph/src/dj_graph.dart';
 import 'package:control_flow_graph/src/dominators.dart';
 import 'package:control_flow_graph/src/globals.dart';
+import 'package:control_flow_graph/src/liveness.dart';
 import 'package:control_flow_graph/src/merge_set.dart';
 import 'package:control_flow_graph/src/phi.dart';
 import 'package:control_flow_graph/src/ssa.dart';
@@ -140,6 +141,9 @@ class ControlFlowGraph {
     _dominatorTree = null;
     _djGraph = null;
     _mergeSets = null;
+    blockDefines = null;
+    uses = null;
+    _liveoutMsCache.clear();
   }
 
   /// Get the basic block with the given ID or label.
@@ -156,13 +160,15 @@ class ControlFlowGraph {
 
   /// Get computed globals in the control flow graph. Globals are all variables
   /// that are written to in one block and read from in another.
-  Map<String, Set<int>> get globals => _globals ??= calculateGlobals(this);
+  Map<String, Set<int>> get globals =>
+      _globals ??= calculateGlobals(graph, _ids, root.id!);
 
   Map<int, int>? _dominators;
 
   /// Get the immediate dominators of each block in the control flow graph.
   /// The root block has itself as the dominator.
-  Map<int, int> get dominators => _dominators ??= computeDominators(this);
+  Map<int, int> get dominators =>
+      _dominators ??= computeDominators(graph, root.id!);
 
   Graph<int, void>? _dominatorTree;
 
@@ -187,6 +193,16 @@ class ControlFlowGraph {
   Map<int, Set<int>> get mergeSets => _mergeSets ??=
       completeTopDownMergeSetComputation(djGraph, root.id!, dominators);
 
+  /// Specifies all SSA variables defined in each block. Only available after
+  /// converting to SSA form.
+  Map<int, Set<SSA>>? blockDefines;
+
+  /// Uses of each SSA variable in the control flow graph. Only available
+  /// after converting to SSA form.
+  Map<SSA, Set<SpecifiedOperation>>? uses;
+
+  final Map<int, Set<int>> _liveoutMsCache = {};
+
   /// Print the computed merge sets in a readable format.
   void printMergeSets() {
     final sorted = mergeSets.entries
@@ -205,7 +221,7 @@ class ControlFlowGraph {
     if (inSSAForm) {
       throw StateError('Cannot insert phi nodes into SSA form');
     }
-    insertPhiNodesInto(this);
+    insertPhiNodesInto(_ids, globals, mergeSets);
     _hasPhiNodes = true;
   }
 
@@ -217,7 +233,12 @@ class ControlFlowGraph {
     if (inSSAForm) {
       throw StateError('Already in SSA form');
     }
-    iterativeSemiPrunedSSA(this);
+    final (cDefines, cUses) =
+        semiPrunedSSARename(graph, root.id!, _ids, globals);
+
+    blockDefines = cDefines;
+    uses = cUses;
+
     _inSSAForm = true;
   }
 
@@ -230,7 +251,7 @@ class ControlFlowGraph {
     if (!inSSAForm) {
       throw StateError('Cannot remove phi nodes from non-SSA form');
     }
-    removePhiNodesFrom(this, assign);
+    removePhiNodesFrom(graph, djGraph, _ids, root.id!, assign);
     _hasPhiNodes = false;
     _inSSAForm = false;
   }
@@ -240,7 +261,25 @@ class ControlFlowGraph {
     if (!inSSAForm) {
       throw StateError('Cannot find variable in non-SSA form');
     }
-    return findVariableInSSAGraph(this, block.id!, name);
+    return findVariableInSSAGraph(_ids, djGraph, block.id!, name);
+  }
+
+  /// Query live-in variable information for a block. Must be in SSA form.
+  bool isLiveIn(SSA variable, BasicBlock block) {
+    if (!inSSAForm) {
+      throw StateError('Cannot query live-in variables in non-SSA form');
+    }
+    return isLiveInUsingMergeSet(
+        block.id!, variable, blockDefines!, uses!, dominators, mergeSets);
+  }
+
+  /// Query live-out variable information for a block. Must be in SSA form.
+  bool isLiveOut(SSA variable, BasicBlock block) {
+    if (!inSSAForm) {
+      throw StateError('Cannot query live-out variables in non-SSA form');
+    }
+    return isLiveOutUsingMergeSet(block.id!, variable, graph, blockDefines!,
+        uses!, dominators, mergeSets, _liveoutMsCache);
   }
 
   @override

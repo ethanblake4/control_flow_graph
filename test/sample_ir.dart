@@ -7,7 +7,7 @@ final class LoadImmediate extends Operation {
   LoadImmediate(this.target, this.value);
 
   @override
-  Set<SSA> get writesTo => {target};
+  SSA? get writesTo => target;
 
   @override
   String toString() => '$target = imm $value';
@@ -31,7 +31,7 @@ final class Add extends Operation {
   Set<SSA> get readsFrom => {left, right};
 
   @override
-  Set<SSA> get writesTo => {target};
+  SSA? get writesTo => target;
 
   @override
   String toString() => '$target = $left + $right';
@@ -57,7 +57,7 @@ final class Assign extends Operation {
   Set<SSA> get readsFrom => {source};
 
   @override
-  Set<SSA> get writesTo => {target};
+  SSA? get writesTo => target;
 
   @override
   String toString() => '$target = $source';
@@ -81,7 +81,7 @@ final class LessThan extends Operation {
   Set<SSA> get readsFrom => {left, right};
 
   @override
-  Set<SSA> get writesTo => {target};
+  SSA? get writesTo => target;
 
   @override
   String toString() => '$target = $left < $right';

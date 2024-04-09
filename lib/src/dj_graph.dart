@@ -1,12 +1,12 @@
 import 'package:control_flow_graph/src/types.dart';
 import 'package:more/graph.dart';
 
+/// A D-edge in the DJ-graph, representing a dominance relationship.
+const int dEdge = 0;
+
 /// A J-edge in the DJ-graph, representing a non-dominance control flow
 /// relationship.
-const int jEdge = 0;
-
-/// A D-edge in the DJ-graph, representing a dominance relationship.
-const int dEdge = 1;
+const int jEdge = 1;
 
 Graph<int, int> computeDJGraph(CFG graph, Map<int, int> dominators) {
   final djGraph = Graph<int, int>.directed(

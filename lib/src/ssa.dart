@@ -1,4 +1,7 @@
+import 'dart:collection';
+
 import 'package:control_flow_graph/control_flow_graph.dart';
+import 'package:control_flow_graph/src/types.dart';
 import 'package:more/more.dart';
 
 /// A static single assignment (SSA) form variable.
@@ -28,108 +31,87 @@ class SSA {
   int get hashCode => name.hashCode ^ version.hashCode;
 }
 
-void iterativeSemiPrunedSSA(ControlFlowGraph cfg) {
-  final globals = cfg.globals;
-  final djGraph = cfg.djGraph;
-
+/// rename variables, also computing sideband def/use information
+(Map<int, Set<SSA>>, Map<SSA, Set<SpecifiedOperation>>) semiPrunedSSARename(
+    CFG graph,
+    int root,
+    Map<int, BasicBlock> ids,
+    Map<String, Set<int>> globals) {
   final definitions = globals.keys.toMap(key: (k) => k, value: (_) => 0);
-  final versions = {
-    for (final entry in definitions.entries) entry.key: {entry.value}
-  };
+  final visited = <int>{};
+  final worklist = ListQueue<(int, Map<String, int>)>.of([
+    (root, {for (final entry in definitions.entries) entry.key: entry.value})
+  ]);
 
-  final visited = <Edge<int, int>>{};
-  final Map<int, Map<String, Set<int>>> versionsAtEnd = {};
+  final defines = <int, Set<SSA>>{};
+  final uses = <SSA, Set<SpecifiedOperation>>{};
 
-  void preorderRename(int block, Map<String, Set<int>> versions, bool isDEdge) {
-    final remove = <PhiNode>{};
-    for (final op in cfg[block]!.code) {
+  workloop:
+  while (worklist.isNotEmpty) {
+    final workItem = worklist.removeFirst();
+    final (blockId, versions) = workItem;
+    final unseen = visited.add(blockId);
+    final block = ids[blockId]!;
+    var remove = <PhiNode>[];
+
+    for (final op in block.code) {
+      final spec = SpecifiedOperation(blockId, op);
       if (op is PhiNode) {
-        final v = op.readsFrom.first;
+        final v = op.sources.first;
         final d = definitions[v.name]!;
-        if (d == 0) {
-          remove.add(op);
-          continue;
-        }
-        final allVersions = versions[v.name]!;
-        if (isDEdge) {
+        final version = versions[v.name]!;
+        if (unseen) {
           op.sources.clear();
-          for (final version in allVersions) {
-            op.sources.add(SSA(v.name, version));
+          if (d == 0) {
+            remove.add(op);
+          } else {
+            definitions[v.name] = d + 1;
+            final target = op.target;
+            target.version = versions[v.name] = d;
+            defines.putIfAbsent(blockId, () => {}).add(target);
           }
-
-          definitions[v.name] = d + 1;
-          versions[v.name] = {d};
-          op.target.version = d;
-        } else {
-          var lastVersion = -1;
-          for (final version in versions[v.name]!) {
-            if (version > lastVersion) {
-              lastVersion = version;
-            }
-          }
-          op.sources.add(SSA(v.name, lastVersion));
-          versions[v.name] = {op.target.version};
         }
+        final src = SSA(v.name, version);
+        op.sources.add(src);
+        uses.putIfAbsent(src, () => Set.identity()).add(spec);
 
         continue;
       }
+
+      if (!unseen) {
+        continue workloop;
+      }
+
       for (final ssa in op.readsFrom) {
         final v = versions[ssa.name];
-        if (v == null) {
-          continue;
+        if (v != null) {
+          ssa.version = v;
+          uses.putIfAbsent(ssa, () => Set.identity()).add(spec);
         }
-        if (v.length > 1) {
-          throw StateError('Variable ${ssa.name} has multiple versions');
-        }
-        ssa.version = v.first;
       }
-      for (final ssa in op.writesTo) {
-        final d = definitions[ssa.name];
-        if (d == null) {
-          continue;
+
+      final writesTo = op.writesTo;
+      if (writesTo != null) {
+        final d = definitions[writesTo.name];
+        if (d != null) {
+          definitions[writesTo.name] = d + 1;
+          versions[writesTo.name] = d;
+          writesTo.version = d;
+          defines.putIfAbsent(blockId, () => {}).add(writesTo);
         }
-        definitions[ssa.name] = d + 1;
-        versions[ssa.name]!.add(d);
-        ssa.version = d;
       }
     }
 
-    for (final phi in remove) {
-      cfg[block]!.code.remove(phi);
+    for (final op in remove) {
+      block.code.remove(op);
     }
 
-    versionsAtEnd[block] = {...versions};
-
-    for (final edge in djGraph.outgoingEdgesOf(block)) {
-      if (visited.add(edge)) {
-        preorderRename(edge.target, {...versions}, edge.value == dEdge);
-      }
+    for (final next in graph.successorsOf(blockId)) {
+      worklist.add((next, {...versions}));
     }
   }
 
-  final rootId = cfg.root.id!;
-
-  visited.add(cfg.djGraph.getEdge(rootId, rootId)!);
-  preorderRename(rootId, versions, true);
-
-  for (final mergeSet in cfg.mergeSets.entries) {
-    final source = mergeSet.key;
-    final targets = mergeSet.value;
-    for (final target in targets) {
-      for (final phi in cfg[target]!.code) {
-        if (phi is! PhiNode) {
-          break;
-        }
-        final nonVersioned = SSA(phi.target.name);
-        if (phi.sources.contains(nonVersioned)) {
-          phi.sources.remove(nonVersioned);
-          final versions = versionsAtEnd[source]![phi.target.name]!;
-          final maxVersion = versions.first;
-          phi.sources.add(SSA(phi.target.name, maxVersion));
-        }
-      }
-    }
-  }
+  return (defines, uses);
 }
 
 String _subscripts = '₀₁₂₃₄₅₆₇₈₉';
@@ -142,7 +124,8 @@ String _versionToSubscript(int version) {
 
 /// Algorithm on SSA-form graph to find the last assignment to a
 /// variable in a block, walking up the graph if necessary.
-SSA findVariableInSSAGraph(ControlFlowGraph cfg, int block, String name) {
+SSA findVariableInSSAGraph(
+    Map<int, BasicBlock> ids, Graph<int, int> djGraph, int block, String name) {
   final visited = <int>{};
   final stack = [block];
 
@@ -152,16 +135,17 @@ SSA findVariableInSSAGraph(ControlFlowGraph cfg, int block, String name) {
       continue;
     }
 
-    for (final op in cfg[current]!.code.reversed) {
-      for (final node in op.writesTo) {
-        if (node.name == name) {
-          return node;
+    for (final op in ids[current]!.code.reversed) {
+      final writesTo = op.writesTo;
+      if (writesTo != null) {
+        if (writesTo.name == name) {
+          return writesTo;
         }
       }
     }
 
-    for (final edge in cfg.djGraph.incomingEdgesOf(current)) {
-      stack.add(edge.source);
+    for (final vertex in djGraph.predecessorsOf(current)) {
+      stack.add(vertex);
     }
   }
 

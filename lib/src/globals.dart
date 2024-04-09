@@ -1,12 +1,13 @@
 import 'dart:collection';
 
-import 'package:control_flow_graph/src/cfg.dart';
+import 'package:control_flow_graph/control_flow_graph.dart';
+import 'package:control_flow_graph/src/types.dart';
 
-Map<String, Set<int>> calculateGlobals(ControlFlowGraph cfg) {
-  final graph = cfg.graph, root = cfg.root;
+Map<String, Set<int>> calculateGlobals(
+    CFG graph, Map<int, BasicBlock> ids, int root) {
   final symbols = <String, Set<int>>{};
   final globals = <String>{};
-  final queue = ListQueue.of([root.id!]);
+  final queue = ListQueue.of([root]);
   final visited = <int>{};
 
   while (queue.isNotEmpty) {
@@ -17,18 +18,19 @@ Map<String, Set<int>> calculateGlobals(ControlFlowGraph cfg) {
 
     final locals = <String>{};
 
-    for (final op in cfg[node]!.code) {
+    for (final op in ids[node]!.code) {
       for (final ssa in op.readsFrom) {
         if (!locals.contains(ssa.name)) {
           globals.add(ssa.name);
         }
       }
-      for (final ssa in op.writesTo) {
-        locals.add(ssa.name);
-        if (symbols.containsKey(ssa.name)) {
-          symbols[ssa.name]!.add(node);
+      final writesTo = op.writesTo;
+      if (writesTo != null) {
+        locals.add(writesTo.name);
+        if (symbols.containsKey(writesTo.name)) {
+          symbols[writesTo.name]!.add(node);
         } else {
-          symbols[ssa.name] = {node};
+          symbols[writesTo.name] = {node};
         }
       }
     }
