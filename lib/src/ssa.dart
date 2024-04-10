@@ -31,20 +31,19 @@ class SSA {
   int get hashCode => name.hashCode ^ version.hashCode;
 }
 
-/// rename variables, also computing sideband def/use information
-(Map<int, Set<SSA>>, Map<SSA, Set<SpecifiedOperation>>) semiPrunedSSARename(
-    CFG graph,
-    int root,
-    Map<int, BasicBlock> ids,
-    Map<String, Set<int>> globals) {
+/// rename variables, also computing def/use information and SSA graph
+SSAComputationData semiPrunedSSARename(CFG graph, int root,
+    Map<int, BasicBlock> ids, Map<String, Set<int>> globals) {
   final definitions = globals.keys.toMap(key: (k) => k, value: (_) => 0);
   final visited = <int>{};
   final worklist = ListQueue<(int, Map<String, int>)>.of([
     (root, {for (final entry in definitions.entries) entry.key: entry.value})
   ]);
 
-  final defines = <int, Set<SSA>>{};
+  final blockDefines = <int, Set<SSA>>{};
+  final defines = <SSA, SpecifiedOperation>{};
   final uses = <SSA, Set<SpecifiedOperation>>{};
+  final ssaGraph = Graph<SpecifiedOperation, void>.directed();
 
   workloop:
   while (worklist.isNotEmpty) {
@@ -68,12 +67,17 @@ class SSA {
             definitions[v.name] = d + 1;
             final target = op.target;
             target.version = versions[v.name] = d;
-            defines.putIfAbsent(blockId, () => {}).add(target);
+            defines[target] = spec;
+            blockDefines.putIfAbsent(blockId, () => {}).add(target);
           }
         }
         final src = SSA(v.name, version);
         op.sources.add(src);
         uses.putIfAbsent(src, () => Set.identity()).add(spec);
+        final def = defines[src];
+        if (def != null) {
+          ssaGraph.addEdge(def, spec);
+        }
 
         continue;
       }
@@ -82,22 +86,30 @@ class SSA {
         continue workloop;
       }
 
+      final writesTo = op.writesTo;
+
       for (final ssa in op.readsFrom) {
         final v = versions[ssa.name];
         if (v != null) {
           ssa.version = v;
           uses.putIfAbsent(ssa, () => Set.identity()).add(spec);
         }
+        if (writesTo != null) {
+          final def = defines[ssa];
+          if (def != null) {
+            ssaGraph.addEdge(def, spec);
+          }
+        }
       }
 
-      final writesTo = op.writesTo;
       if (writesTo != null) {
         final d = definitions[writesTo.name];
         if (d != null) {
           definitions[writesTo.name] = d + 1;
           versions[writesTo.name] = d;
           writesTo.version = d;
-          defines.putIfAbsent(blockId, () => {}).add(writesTo);
+          defines[writesTo] = spec;
+          blockDefines.putIfAbsent(blockId, () => {}).add(writesTo);
         }
       }
     }
@@ -111,7 +123,7 @@ class SSA {
     }
   }
 
-  return (defines, uses);
+  return SSAComputationData(ssaGraph, blockDefines, defines, uses);
 }
 
 String _subscripts = '₀₁₂₃₄₅₆₇₈₉';
@@ -150,4 +162,13 @@ SSA findVariableInSSAGraph(
   }
 
   throw StateError('Variable $name not found in block $block');
+}
+
+class SSAComputationData {
+  final Graph<SpecifiedOperation, void> ssaGraph;
+  final Map<int, Set<SSA>> blockDefines;
+  final Map<SSA, SpecifiedOperation> defines;
+  final Map<SSA, Set<SpecifiedOperation>> uses;
+
+  SSAComputationData(this.ssaGraph, this.blockDefines, this.defines, this.uses);
 }

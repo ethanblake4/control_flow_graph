@@ -5,6 +5,8 @@ import 'package:control_flow_graph/src/dominators.dart';
 import 'package:control_flow_graph/src/globals.dart';
 import 'package:control_flow_graph/src/liveness.dart';
 import 'package:control_flow_graph/src/merge_set.dart';
+import 'package:control_flow_graph/src/optimizations/copy_propagation.dart';
+import 'package:control_flow_graph/src/optimizations/dce.dart';
 import 'package:control_flow_graph/src/phi.dart';
 import 'package:control_flow_graph/src/ssa.dart';
 import 'package:control_flow_graph/src/types.dart';
@@ -197,9 +199,23 @@ class ControlFlowGraph {
   /// converting to SSA form.
   Map<int, Set<SSA>>? blockDefines;
 
+  // Defines of each SSA variable in the control flow graph. Only available
+  // after converting to SSA form.
+  Map<SSA, SpecifiedOperation>? defines;
+
   /// Uses of each SSA variable in the control flow graph. Only available
   /// after converting to SSA form.
   Map<SSA, Set<SpecifiedOperation>>? uses;
+
+  /// SSA graph. Only available after converting to SSA form.
+  Graph<SpecifiedOperation, void> get ssaGraph {
+    if (!inSSAForm) {
+      throw StateError('Cannot access SSA graph before converting to SSA form');
+    }
+    return _ssaGraph!;
+  }
+
+  Graph<SpecifiedOperation, void>? _ssaGraph;
 
   final Map<int, Set<int>> _liveoutMsCache = {};
 
@@ -233,35 +249,14 @@ class ControlFlowGraph {
     if (inSSAForm) {
       throw StateError('Already in SSA form');
     }
-    final (cDefines, cUses) =
-        semiPrunedSSARename(graph, root.id!, _ids, globals);
+    final ssaData = semiPrunedSSARename(graph, root.id!, _ids, globals);
 
-    blockDefines = cDefines;
-    uses = cUses;
+    blockDefines = ssaData.blockDefines;
+    defines = ssaData.defines;
+    uses = ssaData.uses;
+    _ssaGraph = ssaData.ssaGraph;
 
     _inSSAForm = true;
-  }
-
-  /// Remove Phi nodes from the control flow graph, replacing them with normal
-  /// assignment operations.
-  void removePhiNodes(Operation Function(SSA left, SSA right) assign) {
-    if (!hasPhiNodes) {
-      throw StateError('No phi nodes to remove');
-    }
-    if (!inSSAForm) {
-      throw StateError('Cannot remove phi nodes from non-SSA form');
-    }
-    removePhiNodesFrom(graph, djGraph, _ids, root.id!, assign);
-    _hasPhiNodes = false;
-    _inSSAForm = false;
-  }
-
-  /// Find the current version of a variable in a block. Must be in SSA form.
-  SSA findSSAVariable(BasicBlock block, String name) {
-    if (!inSSAForm) {
-      throw StateError('Cannot find variable in non-SSA form');
-    }
-    return findVariableInSSAGraph(_ids, djGraph, block.id!, name);
   }
 
   /// Query live-in variable information for a block. Must be in SSA form.
@@ -280,6 +275,49 @@ class ControlFlowGraph {
     }
     return isLiveOutUsingMergeSet(block.id!, variable, graph, blockDefines!,
         uses!, dominators, mergeSets, _liveoutMsCache);
+  }
+
+  /// Find the current version of a variable in a block. Must be in SSA form.
+  SSA findSSAVariable(BasicBlock block, String name) {
+    if (!inSSAForm) {
+      throw StateError('Cannot find variable in non-SSA form');
+    }
+    return findVariableInSSAGraph(_ids, djGraph, block.id!, name);
+  }
+
+  void runCopyPropagation() {
+    if (!inSSAForm) {
+      throw StateError('Cannot run copy propagation in non-SSA form');
+    }
+    ssaBasedCopyPropagation(this, root.id!);
+  }
+
+  void removeUnusedDefines() {
+    if (!inSSAForm) {
+      throw StateError('Cannot remove unused defines in non-SSA form');
+    }
+    removeUnusedSSADefines(this);
+  }
+
+  void removeEmptyAndUnusedBlocks() {
+    if (!inSSAForm) {
+      throw StateError('Cannot remove empty blocks in non-SSA form');
+    }
+    trimBlocks(this);
+  }
+
+  /// Remove Phi nodes from the control flow graph, replacing them with normal
+  /// assignment operations.
+  void removePhiNodes(Operation Function(SSA left, SSA right) assign) {
+    if (!hasPhiNodes) {
+      throw StateError('No phi nodes to remove');
+    }
+    if (!inSSAForm) {
+      throw StateError('Cannot remove phi nodes from non-SSA form');
+    }
+    removePhiNodesFrom(graph, ssaGraph, _ids, root.id!, assign);
+    _hasPhiNodes = false;
+    _inSSAForm = false;
   }
 
   @override

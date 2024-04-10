@@ -119,11 +119,35 @@ Currently, this library provides the following algorithms:
   - Compute dominator tree
   - Compute globals
   - Compute DJ-graph
-  - Compute merge sets
+  - Compute merge sets (per-basic block DF+ sets)
   - Insert Phi nodes
   - Convert to semi-pruned SSA form
+  - Query liveness information (in & out)
+  - Copy propagation
+  - Unused defines elimination
+  - Dead block elimination
   - Remove Phi nodes from SSA form
   - Find variable version at a given block
+
+## Note on SSA algorithm
+
+This library implements a novel SSA renaming algorithm. While it is much faster than
+other approaches, it requires that variables be defined in the scope they are used.
+For example, the following PHP code will not work:
+
+```php
+$x = 1;
+if ($x < 2) {
+  $y = 3;
+} else {
+  $y = 4;
+}
+echo $y;
+```
+
+To make this code computable, you would have to hoist the declaration of `$y` above
+the if-else block. Many languages like Dart, C, and Java already enforce this
+restriction, so it should not be relevant in practice when used with them.
 
 ## Features and bugs
 

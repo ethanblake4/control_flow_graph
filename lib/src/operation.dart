@@ -1,14 +1,21 @@
-import 'package:control_flow_graph/src/cfg.dart';
-import 'package:control_flow_graph/src/ssa.dart';
+import 'package:control_flow_graph/control_flow_graph.dart';
 
 /// Defines an SSA operation in a program's [BasicBlock]. The operation must
 /// specify which variables it reads from and writes to.
-class Operation {
+abstract class Operation {
   /// The set of variables that are written to by this operation.
   SSA? get writesTo => null;
 
   /// The set of variables that are read from by this operation.
   Set<SSA> get readsFrom => {};
+
+  /// The basic type of the operation, if it represents one. Used for various
+  /// optimizations and transformations.
+  OpType get type => const Noop();
+
+  /// Creates a copy of this operation with the given [writesTo] and [readsFrom]
+  /// variables.
+  Operation copyWith({SSA? writesTo});
 }
 
 /// A phi node operation in a program's [BasicBlock]. Phi nodes are used to
@@ -45,4 +52,70 @@ class PhiNode extends Operation {
 
   @override
   int get hashCode => target.hashCode ^ sources.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return PhiNode(writesTo ?? target, sources);
+  }
+}
+
+/// Represents the basic types of operations that can be performed in a program.
+/// These types are used for various optimizations and transformations.
+interface class OpType {}
+
+/// An operation type that does nothing.
+class Noop implements OpType {
+  /// Creates a new noop operation type.
+  const Noop();
+}
+
+/// An operation type that represents arithmetic operations.
+enum ArithmeticOp implements OpType {
+  add,
+  subtract,
+  multiply,
+  divide,
+  modulo,
+}
+
+/// An operation type that represents assignment operations.
+enum AssignmentOp implements OpType {
+  assign,
+  addAssign(ArithmeticOp.add),
+  subtractAssign(ArithmeticOp.subtract),
+  multiplyAssign(ArithmeticOp.multiply),
+  divideAssign(ArithmeticOp.divide),
+  moduloAssign(ArithmeticOp.modulo);
+
+  /// Creates a new assignment operation type with the given [inner] operation.
+  const AssignmentOp([this.inner]);
+
+  /// The inner operation type of this assignment operation. For example,
+  /// [addAssign] has an inner operation type of [ArithmeticOp.add].
+  final OpType? inner;
+}
+
+/// An operation type that represents bitwise operations.
+enum BitwiseOp implements OpType { and, or, xor, shiftLeft, shiftRight, not }
+
+/// An operation type that represents comparison operations.
+enum ComparisonOp implements OpType {
+  equal,
+  notEqual,
+  lessThan,
+  lessThanOrEqual,
+  greaterThan,
+  greaterThanOrEqual,
+}
+
+/// An operation type that represents logical operations.
+enum LogicalOp implements OpType {
+  and,
+  or,
+  not,
+}
+
+/// An operation type that represents unary operations.
+enum UnaryOp implements OpType {
+  negate,
 }

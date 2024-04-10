@@ -1,5 +1,7 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
 
+import '../test/sample_ir.dart';
+
 void main() {
   /// Create a control flow graph (CFG) for the following code:
   /// ```dart
@@ -31,6 +33,14 @@ void main() {
 
   cfg.computeSemiPrunedSSA();
   print(cfg[3]!.code[0]); // z₂ = φ(z₀, z₁)
+
+  final y = cfg.findSSAVariable(cfg[0]!, 'y');
+  print(cfg.isLiveIn(y, cfg[0]!)); // true
+  print(cfg.isLiveOut(y, cfg[0]!)); // false
+
+  cfg.runCopyPropagation();
+  cfg.removeUnusedDefines();
+  cfg.removePhiNodes((left, right) => Assign(left, right));
 }
 
 // Sample intermediate representation (IR) classes
@@ -46,6 +56,11 @@ final class LoadImmediate extends Operation {
 
   @override
   String toString() => '$target = imm $value';
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return LoadImmediate(writesTo ?? target, value);
+  }
 }
 
 final class LessThan extends Operation {
@@ -63,6 +78,11 @@ final class LessThan extends Operation {
 
   @override
   String toString() => '$target = $left < $right';
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return LessThan(writesTo ?? target, left, right);
+  }
 }
 
 final class Return extends Operation {
@@ -75,4 +95,9 @@ final class Return extends Operation {
 
   @override
   String toString() => 'return $value';
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return this;
+  }
 }

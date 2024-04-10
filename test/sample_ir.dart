@@ -18,6 +18,11 @@ final class LoadImmediate extends Operation {
 
   @override
   int get hashCode => target.hashCode ^ value.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return LoadImmediate(writesTo ?? target, value);
+  }
 }
 
 final class Add extends Operation {
@@ -34,6 +39,9 @@ final class Add extends Operation {
   SSA? get writesTo => target;
 
   @override
+  OpType get type => ArithmeticOp.add;
+
+  @override
   String toString() => '$target = $left + $right';
 
   @override
@@ -45,6 +53,11 @@ final class Add extends Operation {
 
   @override
   int get hashCode => target.hashCode ^ left.hashCode ^ right.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return Add(writesTo ?? target, left, right);
+  }
 }
 
 final class Assign extends Operation {
@@ -60,6 +73,9 @@ final class Assign extends Operation {
   SSA? get writesTo => target;
 
   @override
+  OpType get type => AssignmentOp.assign;
+
+  @override
   String toString() => '$target = $source';
 
   @override
@@ -68,6 +84,11 @@ final class Assign extends Operation {
 
   @override
   int get hashCode => target.hashCode ^ source.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return Assign(writesTo ?? target, source);
+  }
 }
 
 final class LessThan extends Operation {
@@ -84,6 +105,9 @@ final class LessThan extends Operation {
   SSA? get writesTo => target;
 
   @override
+  OpType get type => ComparisonOp.lessThan;
+
+  @override
   String toString() => '$target = $left < $right';
 
   @override
@@ -95,6 +119,11 @@ final class LessThan extends Operation {
 
   @override
   int get hashCode => target.hashCode ^ left.hashCode ^ right.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return LessThan(writesTo ?? target, left, right);
+  }
 }
 
 final class Return extends Operation {
@@ -113,4 +142,9 @@ final class Return extends Operation {
 
   @override
   int get hashCode => value.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo}) {
+    return this;
+  }
 }
