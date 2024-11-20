@@ -4,28 +4,31 @@ import 'package:more/more.dart';
 
 void insertPhiNodesInto(Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
     Map<int, Set<int>> mergeSets) {
-  final phiNodes = <int, Set<String>>{};
+  final phiNodes = <int, Set<(String, int)>>{};
 
   for (var sourceBlock in mergeSets.keys) {
-    final assignments = <String>{};
+    final assignments = <(String, int)>{};
     final sb = ids[sourceBlock]!;
     for (var op in sb.code) {
       final writesTo = op.writesTo;
       if (writesTo != null && globals.containsKey(writesTo.name)) {
-        assignments.add(writesTo.name);
+        assignments.add((writesTo.name, writesTo.type));
       }
     }
     for (var targetBlock in mergeSets[sourceBlock]!) {
       for (var assignment in assignments) {
-        phiNodes.putIfAbsent(targetBlock, () => <String>{}).add(assignment);
+        phiNodes
+            .putIfAbsent(targetBlock, () => <(String, int)>{})
+            .add(assignment);
       }
     }
   }
 
   for (var block in phiNodes.keys) {
     final sb = ids[block]!;
-    for (var assignment in phiNodes[block]!) {
-      sb.code.insert(0, PhiNode(SSA(assignment), {SSA(assignment)}));
+    for (var (name, type) in phiNodes[block]!) {
+      sb.code
+          .insert(0, PhiNode(SSA(name, type: type), {SSA(name, type: type)}));
     }
   }
 }

@@ -1,4 +1,6 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
+import 'package:control_flow_graph/src/loop.dart';
+import 'package:control_flow_graph/src/types.dart';
 import 'package:test/test.dart';
 
 import 'sample_ir.dart';
@@ -71,31 +73,60 @@ void main() {
         cfg.insertPhiNodes();
       }
       cfg.computeSemiPrunedSSA();
-      expect(cfg[4]!.code[0], PhiNode(SSA('z', 4), {SSA('z', 2), SSA('z', 3)}));
+      expect(
+          cfg[4]!.code[0],
+          PhiNode(SSA('z', version: 4),
+              {SSA('z', version: 2), SSA('z', version: 3)}));
     });
   });
 
   group('Standard for loop', () {
+    var hasSpilled = false;
     final cfg = ControlFlowGraph.builder()
         .root(BasicBlock([
-          LoadImmediate(SSA('x'), 0),
-          LoadImmediate(SSA('i'), 0),
+          LoadImmediate(SSA('x', type: 0), 0),
+          LoadImmediate(SSA('i', type: 0), 0),
         ]))
         .then(BasicBlock([
-          LoadImmediate(SSA('n'), 10),
-          LessThan(ControlFlowGraph.branch, SSA('i'), SSA('n'))
+          LoadImmediate(SSA('n', type: 0), 10),
+          LoadImmediate(SSA('n', type: 0), 11),
+          LessThan(
+              ControlFlowGraph.branch, SSA('i', type: 0), SSA('n', type: 0))
         ]))
         .split(
           BasicBlock([
-            Add(SSA('x'), SSA('x'), SSA('i')),
+            Add(SSA('x', type: 0), SSA('x', type: 0), SSA('i', type: 0)),
             LoadImmediate(SSA('@1'), 1),
-            Add(SSA('i'), SSA('i'), SSA('@1')),
+            Add(SSA('i', type: 0), SSA('i', type: 0), SSA('@1')),
           ]),
-          BasicBlock([Return(SSA('x'))]),
+          BasicBlock([Return(SSA('x', type: 0))]),
         )
         .build();
 
     cfg.link(cfg[2]!, cfg[1]!);
+    cfg.loops.add(Loop(1, {1, 2}, {(2, 3)}));
+
+    final group0 = RegisterGroup({0, 1});
+    cfg.registerRegType(0, RegType(0, 'gpr', {group0}));
+
+    cfg.opCreators.addAll({
+      LoadImmediate: Creator<LoadImmediate, void>(variants: {
+        Variant(result: 0, arguments: []),
+        Variant(result: 1, arguments: []),
+        Variant(result: 2, arguments: []),
+      }, create: (operation, context) => INoop()),
+      LessThan: Creator<LessThan, void>(variants: {
+        Variant(result: 0, arguments: [0, 1]),
+        Variant(result: 1, arguments: [0, 1])
+      }, create: (operation, context) => INoop()),
+      Add: Creator<Add, void>(variants: {
+        Variant(result: 0, arguments: [0, 1]),
+        Variant(result: 2, arguments: [0, 1])
+      }, create: (operation, context) => INoop()),
+      Return: Creator<Return, void>(variants: {
+        Variant(result: null, arguments: [0]),
+      }, create: (operation, context) => INoop()),
+    });
 
     test('Find globals', () {
       expect(cfg.globals, {
@@ -148,8 +179,9 @@ i₀ = imm 0
 B1:
 i₁ = φ(i₀, i₂)  
 x₁ = φ(x₀, x₂)  
-n = imm 10  
-@branch = i₁ < n
+n₀ = imm 10  
+n₁ = imm 11  
+@branch = i₁ < n₁
 → (B2, B3)
 
 B2:
@@ -185,6 +217,7 @@ return x₁\n
       final x = cfg.findSSAVariable(block, 'x');
       expect(cfg.isLiveIn(i, block), true);
       expect(cfg.isLiveIn(x, block), true);
+      expect(cfg.isLiveIn(SSA('x', version: 0), block), false);
 
       final block2 = cfg[3]!;
       final i2 = cfg.findSSAVariable(block2, 'i');
@@ -230,8 +263,8 @@ i₀ = imm 0
 B1:
 i₁ = φ(i₀, i₂)  
 x₁ = φ(x₀, x₂)  
-n = imm 10  
-@branch = i₁ < n
+n₁ = imm 11  
+@branch = i₁ < n₁
 → (B2, B3)
 
 B2:
@@ -241,6 +274,75 @@ i₂ = i₁ + @1
 → (B1)
 
 B3:
+return x₁\n
+'''));
+    });
+
+    test('Compute global next use distances', () {
+      if (!cfg.hasPhiNodes) {
+        cfg.insertPhiNodes();
+      }
+
+      if (!cfg.inSSAForm) {
+        cfg.computeSemiPrunedSSA();
+      }
+
+      cfg.removeUnusedDefines();
+      print(cfg.nextUseDistances);
+    });
+
+    test('Compute register pressure', () {
+      if (!cfg.hasPhiNodes) {
+        cfg.insertPhiNodes();
+      }
+
+      if (!cfg.inSSAForm) {
+        cfg.computeSemiPrunedSSA();
+      }
+
+      cfg.removeUnusedDefines();
+      print(cfg.registerPressure);
+    });
+
+    test('Spill registers', () {
+      if (!cfg.hasPhiNodes) {
+        cfg.insertPhiNodes();
+      }
+
+      if (!cfg.inSSAForm) {
+        cfg.computeSemiPrunedSSA();
+      }
+
+      cfg.removeUnusedDefines();
+
+      cfg.spillReloadVariables({group0: 2});
+      hasSpilled = true;
+      expect(() => {print(cfg)}, prints('''
+B0:
+x₀ = imm 0  
+i₀ = imm 0
+→ (B1)
+
+B1:
+i₁ = φ(i₀, i₂)  
+x₁ = φ(x₀, x₂)  
+spill x₁  
+n₁ = imm 11  
+@branch = i₁ < n₁
+→ (B2, B3)
+
+B2:
+spill n₁  
+reload x₁  
+x₂ = x₁ + i₁  
+@1 = imm 1  
+spill x₂  
+i₂ = i₁ + @1  
+reload x₂
+→ (B1)
+
+B3:
+reload x₁  
 return x₁\n
 '''));
     });
@@ -252,6 +354,12 @@ return x₁\n
       if (!cfg.inSSAForm) {
         cfg.computeSemiPrunedSSA();
       }
+      cfg.removeUnusedDefines();
+
+      if (!hasSpilled) {
+        cfg.spillReloadVariables({group0: 2});
+      }
+
       cfg.removeEmptyAndUnusedBlocks();
       expect(() => {print(cfg)}, prints('''
 B0:
@@ -262,17 +370,23 @@ i₀ = imm 0
 B1:
 i₁ = φ(i₀, i₂)  
 x₁ = φ(x₀, x₂)  
-n = imm 10  
-@branch = i₁ < n
+spill x₁  
+n₁ = imm 11  
+@branch = i₁ < n₁
 → (B2, B3)
 
 B2:
+spill n₁  
+reload x₁  
 x₂ = x₁ + i₁  
 @1 = imm 1  
-i₂ = i₁ + @1
+spill x₂  
+i₂ = i₁ + @1  
+reload x₂
 → (B1)
 
 B3:
+reload x₁  
 return x₁\n
 '''));
     });
@@ -284,8 +398,13 @@ return x₁\n
       if (!cfg.inSSAForm) {
         cfg.computeSemiPrunedSSA();
       }
+      cfg.removeUnusedDefines();
+      if (!hasSpilled) {
+        cfg.spillReloadVariables({group0: 2});
+      }
+
+      cfg.removeEmptyAndUnusedBlocks();
       cfg.removePhiNodes((l, r) => Assign(l, r));
-      print(cfg);
       expect(() => print(cfg), prints('''
 B0:
 x₁ = imm 0  
@@ -293,17 +412,23 @@ i₁ = imm 0
 → (B1)
 
 B1:
-n = imm 10  
-@branch = i₁ < n
+spill x₁  
+n₁ = imm 11  
+@branch = i₁ < n₁
 → (B2, B3)
 
 B2:
+spill n₁  
+reload x₁  
 x₁ = x₁ + i₁  
 @1 = imm 1  
-i₁ = i₁ + @1
+spill x₂  
+i₁ = i₁ + @1  
+reload x₂
 → (B1)
 
 B3:
+reload x₁  
 return x₁\n
 '''));
     });

@@ -24,6 +24,9 @@ void trimBlocks(ControlFlowGraph cfg) {
 
   for (final blockId in graph.vertices) {
     final block = cfg[blockId]!;
+    if (block == cfg.root) {
+      continue;
+    }
     final neighbors = graph.neighboursOf(blockId);
     if (block.code.isEmpty ||
         neighbors.isEmpty ||

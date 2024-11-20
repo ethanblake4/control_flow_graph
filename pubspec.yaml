@@ -1,6 +1,6 @@
 name: control_flow_graph
 description: A library for creating and manipulating control flow graphs and SSA form.
-version: 1.1.0
+version: 1.2.0
 homepage: https://github.com/ethanblake4/control_flow_graph
 topics:
   - compiler

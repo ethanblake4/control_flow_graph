@@ -20,9 +20,12 @@ final class LoadImmediate extends Operation {
   int get hashCode => target.hashCode ^ value.hashCode;
 
   @override
-  Operation copyWith({SSA? writesTo}) {
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
     return LoadImmediate(writesTo ?? target, value);
   }
+
+  @override
+  bool get isRematerializable => true;
 }
 
 final class Add extends Operation {
@@ -55,39 +58,9 @@ final class Add extends Operation {
   int get hashCode => target.hashCode ^ left.hashCode ^ right.hashCode;
 
   @override
-  Operation copyWith({SSA? writesTo}) {
-    return Add(writesTo ?? target, left, right);
-  }
-}
-
-final class Assign extends Operation {
-  final SSA target;
-  final SSA source;
-
-  Assign(this.target, this.source);
-
-  @override
-  Set<SSA> get readsFrom => {source};
-
-  @override
-  SSA? get writesTo => target;
-
-  @override
-  OpType get type => AssignmentOp.assign;
-
-  @override
-  String toString() => '$target = $source';
-
-  @override
-  bool operator ==(Object other) =>
-      other is Assign && target == other.target && source == other.source;
-
-  @override
-  int get hashCode => target.hashCode ^ source.hashCode;
-
-  @override
-  Operation copyWith({SSA? writesTo}) {
-    return Assign(writesTo ?? target, source);
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return Add(writesTo ?? target, readsFrom?.firstOrNull ?? left,
+        readsFrom?.lastOrNull ?? right);
   }
 }
 
@@ -121,8 +94,9 @@ final class LessThan extends Operation {
   int get hashCode => target.hashCode ^ left.hashCode ^ right.hashCode;
 
   @override
-  Operation copyWith({SSA? writesTo}) {
-    return LessThan(writesTo ?? target, left, right);
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return LessThan(writesTo ?? target, readsFrom?.firstOrNull ?? left,
+        readsFrom?.lastOrNull ?? right);
   }
 }
 
@@ -144,7 +118,9 @@ final class Return extends Operation {
   int get hashCode => value.hashCode;
 
   @override
-  Operation copyWith({SSA? writesTo}) {
-    return this;
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return Return(readsFrom?.single ?? value);
   }
 }
+
+final class INoop implements Instruction {}

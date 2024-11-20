@@ -8,6 +8,11 @@ class BasicBlockBuilder {
 
   BasicBlockBuilder(this._cfg, this._blocks, this._parent, [this._groupStart]);
 
+  BasicBlockBuilder float(BasicBlock block) {
+    _cfg.append(block);
+    return this;
+  }
+
   BasicBlockBuilder merge(BasicBlock block) {
     _cfg.linkAll(_blocks, [block]);
     return BasicBlockBuilder(_cfg, [block], this, _groupStart);
@@ -37,6 +42,13 @@ class BasicBlockBuilder {
     return BasicBlockBuilder(_cfg, blocks, this, _groupStart);
   }
 
+  BasicBlockBuilder splitMerge(BasicBlock split, BasicBlock merge) {
+    assert(_blocks.length == 1, 'Only one block can be split');
+    _cfg.linkAll(_blocks, [split, merge]);
+    _cfg.link(split, merge);
+    return BasicBlockBuilder(_cfg, [merge], this, _groupStart);
+  }
+
   BasicBlockBuilder block(int index) {
     return BasicBlockBuilder(_cfg, [_blocks[index]], this, this);
   }
@@ -46,7 +58,12 @@ class BasicBlockBuilder {
     return _groupStart!;
   }
 
+  void link(BasicBlock b1, BasicBlock b2) {
+    _cfg.link(b1, b2);
+  }
+
   BasicBlockBuilder get _root => _parent == null ? this : _parent._root;
+  BasicBlockBuilder get root => _root;
 
   ControlFlowGraph build() {
     _cfg.root = _root._blocks.first;

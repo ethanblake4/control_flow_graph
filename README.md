@@ -2,8 +2,9 @@
 [![GitHub](https://img.shields.io/github/last-commit/ethanblake4/control_flow_graph)](https://github.com/ethanblake4/control_flow_graph)
 
 `control_flow_graph` provides a Dart library for creating and running various algorithms on
-control flow graphs (CFGs), such as converting to SSA form, computing dominators, and
-more.
+control flow graphs (CFGs), such as converting to SSA form, computing dominators, 
+register spilling, and more. This is useful for writing compilers, interpreters, and 
+static analysis tools.
 
 ## Getting started
 
@@ -21,6 +22,10 @@ final class LoadImmediate extends Operation {
 
   @override
   Set<SSA> get writesTo => {target};
+
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return LoadImmediate(writesTo ?? target, value);
+  }
 }
 
 final class LessThan extends Operation {
@@ -35,6 +40,10 @@ final class LessThan extends Operation {
 
   @override
   Set<SSA> get writesTo => {target};
+
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return LessThan(writesTo ?? target, readsFrom?.firstOrNull ?? left, readsFrom?.lastOrNull ?? right);
+  }
 }
 
 final class Return extends Operation {
@@ -44,6 +53,10 @@ final class Return extends Operation {
 
   @override
   Set<SSA> get readsFrom => {value};
+
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return Return(readsFrom?.single ?? value);
+  }
 }
 ```
 
@@ -123,17 +136,21 @@ Currently, this library provides the following algorithms:
   - Insert Phi nodes
   - Convert to semi-pruned SSA form
   - Query liveness information (in & out)
+  - Compute live-in sets
+  - Compute global next-use distances
+  - Find variable version at a given block
   - Copy propagation
   - Unused defines elimination
   - Dead block elimination
+  - Compute register pressure
+  - Spill and reload variables to/from memory
   - Remove Phi nodes from SSA form
-  - Find variable version at a given block
 
 ## Note on SSA algorithm
 
 This library implements a novel SSA renaming algorithm. While it is much faster than
-other approaches, it requires that variables be defined in the scope they are used.
-For example, the following PHP code will not work:
+other approaches, it requires that variables be defined in or above the scope they are
+used. For example, the following PHP code will not work:
 
 ```php
 $x = 1;
@@ -154,3 +171,12 @@ restriction, so it should not be relevant in practice when used with them.
 Please file feature requests and bugs at the [issue tracker][tracker].
 
 [tracker]: https://github.com/ethanblake4/control_flow_graph/issues
+
+## Citations
+
+- [SSA-based Compiler Design. Rastello, F. and Bouchez, F.](https://link.springer.com/book/10.1007/978-3-030-80515-9)
+- [A practical and fast iterative algorithm for ϕ-function computation using DJ graphs. Das, D., B. Dupont De Dinechin and R. Upadrasta](https://dl.acm.org/doi/10.1145/1065887.1065890)
+- [Efficient liveness computation using merge sets and DJ-graphs. Das, D. and Ramakrishna, U.](https://dl.acm.org/doi/10.1145/1065887.1065891)
+- [SSA-based Register Allocation, Universität des Saarlandes Compiler Design Lab](https://compilers.cs.uni-saarland.de/projects/ssara/)
+- [Preference-guided Register Assignment, Braun, M., Mallon, C. and Hack, S.](https://link.springer.com/chapter/10.1007/978-3-642-11970-5_12)
+- [The Go Programming Language, The Go Authors](https://github.com/golang/go)

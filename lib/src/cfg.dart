@@ -1,10 +1,17 @@
+import 'dart:collection';
+
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/builder.dart';
+import 'package:control_flow_graph/src/allocator/regalloc_2.dart';
+import 'package:control_flow_graph/src/allocator/register_pressure.dart';
+import 'package:control_flow_graph/src/allocator/spill.dart';
 import 'package:control_flow_graph/src/dj_graph.dart';
 import 'package:control_flow_graph/src/dominators.dart';
 import 'package:control_flow_graph/src/globals.dart';
 import 'package:control_flow_graph/src/liveness.dart';
+import 'package:control_flow_graph/src/loop.dart';
 import 'package:control_flow_graph/src/merge_set.dart';
+import 'package:control_flow_graph/src/next_use.dart';
+import 'package:control_flow_graph/src/operation.dart';
 import 'package:control_flow_graph/src/optimizations/copy_propagation.dart';
 import 'package:control_flow_graph/src/optimizations/dce.dart';
 import 'package:control_flow_graph/src/phi.dart';
@@ -25,6 +32,15 @@ class ControlFlowGraph {
   /// Map of labels to block IDs
   final Map<String, int> labels = {};
   final Map<int, BasicBlock> _ids = {};
+
+  /// Map of type IDs to RegTypes
+  final Map<int, RegType> regTypes = {};
+
+  /// Loops
+  final Set<Loop> loops = {};
+
+  /// Op creators
+  final Map<Type, InstructionCreator> opCreators = {};
 
   /// Last block ID assigned
   int lastBlockId = 0;
@@ -52,6 +68,11 @@ class ControlFlowGraph {
   /// Magic constant. Assign a boolean value to this SSA to indicate the taking
   /// a conditional branch.
   static final SSA branch = SSA('@branch');
+
+  /// Register a RegType for the given type ID.
+  void registerRegType(int id, RegType type) {
+    regTypes[id] = type;
+  }
 
   /// Link the end of [source] to the start of [target]. If the blocks are not
   /// already part of the graph, they will be added.
@@ -135,6 +156,23 @@ class ControlFlowGraph {
     invalidate();
   }
 
+  /// Append a block without linking it to any other block.
+  void append(BasicBlock block, [bool override = false]) {
+    if (hasPhiNodes && !override) {
+      throw StateError('Cannot append blocks after adding phi nodes');
+    }
+    if (inSSAForm && !override) {
+      throw StateError('Cannot append blocks after converting to SSA form');
+    }
+    final id = block.id ??= lastBlockId++;
+    if (block.label != null) {
+      labels[block.label!] = id;
+    }
+    _ids[id] = block;
+    graph.addVertex(id);
+    if (!override) invalidate();
+  }
+
   /// Invalidate all internal caches. This is necessary if you modify the graph
   /// directly.
   void invalidate() {
@@ -199,6 +237,9 @@ class ControlFlowGraph {
   /// converting to SSA form.
   Map<int, Set<SSA>>? blockDefines;
 
+  /// Max version of each SSA variable.
+  Map<String, int> maxVersions = {};
+
   // Defines of each SSA variable in the control flow graph. Only available
   // after converting to SSA form.
   Map<SSA, SpecifiedOperation>? defines;
@@ -206,6 +247,28 @@ class ControlFlowGraph {
   /// Uses of each SSA variable in the control flow graph. Only available
   /// after converting to SSA form.
   Map<SSA, Set<SpecifiedOperation>>? uses;
+
+  Map<int, Map<SSA, SplayTreeSet<int>>>? _nextUseDistances;
+
+  Map<int, Map<SSA, SplayTreeSet<int>>> get nextUseDistances {
+    if (!inSSAForm) {
+      throw StateError(
+          'Cannot access next use distances before converting to SSA form');
+    }
+    return _nextUseDistances ??= computeGlobalNextUseDistances(this, graph,
+        root.id!, _ids, blockDefines!, uses!, regTypes, loops, dominators);
+  }
+
+  /// Get the computed register pressure for each block in the control flow
+  /// graph. Only available after converting to SSA form.
+  Map<int, Map<RegisterGroup, int>> get registerPressure {
+    if (!inSSAForm) {
+      throw StateError(
+          'Cannot access register pressure before converting to SSA form');
+    }
+    return computeRegisterPressure(graph, root.id!, _ids, regTypes,
+        blockDefines!, uses!, dominators, mergeSets);
+  }
 
   /// SSA graph. Only available after converting to SSA form.
   Graph<SpecifiedOperation, void> get ssaGraph {
@@ -255,8 +318,16 @@ class ControlFlowGraph {
     defines = ssaData.defines;
     uses = ssaData.uses;
     _ssaGraph = ssaData.ssaGraph;
+    maxVersions = ssaData.definitions;
 
     _inSSAForm = true;
+  }
+
+  void convertToConventionalForm() {
+    if (!inSSAForm) {
+      throw StateError('Cannot convert to conventional SSA form');
+    }
+    makeConventional(this, root.id!, _ids);
   }
 
   /// Query live-in variable information for a block. Must be in SSA form.
@@ -264,8 +335,8 @@ class ControlFlowGraph {
     if (!inSSAForm) {
       throw StateError('Cannot query live-in variables in non-SSA form');
     }
-    return isLiveInUsingMergeSet(
-        block.id!, variable, blockDefines!, uses!, dominators, mergeSets);
+    return isLiveInUsingMergeSet(root.id!, block.id!, variable, blockDefines!,
+        uses!, dominators, mergeSets);
   }
 
   /// Query live-out variable information for a block. Must be in SSA form.
@@ -275,6 +346,22 @@ class ControlFlowGraph {
     }
     return isLiveOutUsingMergeSet(block.id!, variable, graph, blockDefines!,
         uses!, dominators, mergeSets, _liveoutMsCache);
+  }
+
+  Map<int, Set<SSA>> get allLiveIn {
+    if (!inSSAForm) {
+      throw StateError('Cannot access live-in variables in non-SSA form');
+    }
+    return allLiveInUsingMergeSet(
+        root.id!, graph, blockDefines!, uses!, dominators, mergeSets);
+  }
+
+  Map<int, Set<SSA>> get allLiveOut {
+    if (!inSSAForm) {
+      throw StateError('Cannot access live-out variables in non-SSA form');
+    }
+    return allLiveOutUsingMergeSet(
+        root.id!, graph, blockDefines!, uses!, dominators, mergeSets);
   }
 
   /// Find the current version of a variable in a block. Must be in SSA form.
@@ -306,6 +393,49 @@ class ControlFlowGraph {
     trimBlocks(this);
   }
 
+  void spillReloadVariables(Map<RegisterGroup, int> registerCounts) {
+    if (!inSSAForm) {
+      throw StateError('Cannot spill/reload variables in non-SSA form');
+    }
+    final reloads = <SSA>{};
+    Operation sp(SSA ssa) => SpillNode(ssa);
+    Operation re(SSA ssa) {
+      reloads.add(ssa);
+      return ReloadNode(ssa);
+    }
+
+    spill(graph, root.id!, _ids, loops, regTypes, registerCounts,
+        registerPressure, nextUseDistances, uses!, allLiveIn, sp, re);
+  }
+
+  void goAllocateRegisters(Map<RegisterGroup, int> registerCounts) {
+    if (!inSSAForm) {
+      throw StateError('Cannot spill/reload variables in non-SSA form');
+    }
+    Operation sp(SSA ssa) => SpillNode(ssa);
+    Operation re(SSA ssa) {
+      return ReloadNode(ssa);
+    }
+
+    Operation copy(SSA dst, SSA src) => Assign(dst, src);
+    regalloc(
+        graph,
+        root.id!,
+        _ids,
+        loops,
+        regTypes,
+        opCreators,
+        registerCounts,
+        registerPressure,
+        nextUseDistances,
+        uses!,
+        allLiveIn,
+        allLiveOut,
+        sp,
+        re,
+        copy);
+  }
+
   /// Remove Phi nodes from the control flow graph, replacing them with normal
   /// assignment operations.
   void removePhiNodes(Operation Function(SSA left, SSA right) assign) {
@@ -317,7 +447,7 @@ class ControlFlowGraph {
     }
     removePhiNodesFrom(graph, ssaGraph, _ids, root.id!, assign);
     _hasPhiNodes = false;
-    _inSSAForm = false;
+    //_inSSAForm = false;
   }
 
   @override

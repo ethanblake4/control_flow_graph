@@ -25,15 +25,19 @@ void ssaBasedCopyPropagation(ControlFlowGraph cfg, int root) {
           final predBlockId = pred.blockId;
           final ee = executableEdges[predBlockId];
           if (ee != null && ee.contains(blockId)) {
-            final wt = pred.op.writesTo!;
-            copyRelations.putIfAbsent(op.target, () => {}).add(wt);
+            final o = pred.op;
+            final wt =
+                o is ParallelCopy ? o.copies.map((c) => c.$2) : [o.writesTo!];
+            copyRelations.putIfAbsent(op.target, () => {}).addAll(wt);
           }
         }
       } else if (op.writesTo != ControlFlowGraph.branch) {
         if (op.type == AssignmentOp.assign) {
-          copyRelations
-              .putIfAbsent(op.writesTo!, () => {})
-              .add(op.readsFrom.first);
+          final wt =
+              op is ParallelCopy ? op.copies.map((c) => c.$2) : [op.writesTo!];
+          for (final w in wt) {
+            copyRelations.putIfAbsent(w, () => {}).add(op.readsFrom.first);
+          }
         }
       }
       for (final succ in ssaGraph.successorsOf(spec)) {
