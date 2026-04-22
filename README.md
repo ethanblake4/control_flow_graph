@@ -1,9 +1,13 @@
 [![License: BSD-3](https://img.shields.io/badge/license-BSD3-purple.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![GitHub](https://img.shields.io/github/last-commit/ethanblake4/control_flow_graph)](https://github.com/ethanblake4/control_flow_graph)
 
-`control_flow_graph` provides a Dart library for creating and running various algorithms on
+`control_flow_graph` provides a Dart library for building compilers
+based on control flow graphs and SSA form. It includes a variety of 
+algorithms for analyzing and transforming
 control flow graphs (CFGs), such as converting to SSA form, computing dominators, 
-register spilling, and more. This is useful for writing compilers, interpreters, and 
+register spilling, and more, as well as a register allocator
+and machine code generator.
+This is useful for writing compilers, interpreters, and 
 static analysis tools.
 
 ## Getting started
@@ -127,7 +131,7 @@ signal that the graph has changed.
 
 ## Available algorithms
 
-Currently, this library provides the following algorithms:
+This library provides the following algorithms:
   - Compute immediate dominators
   - Compute dominator tree
   - Compute globals
@@ -145,6 +149,8 @@ Currently, this library provides the following algorithms:
   - Compute register pressure
   - Spill and reload variables to/from memory
   - Remove Phi nodes from SSA form
+  - Register allocation
+  - Convert to machine code
 
 ## Note on SSA algorithm
 
