@@ -100,6 +100,42 @@ final class LessThan extends Operation {
   }
 }
 
+final class GreaterThanOrEqual extends Operation {
+  final SSA target;
+  final SSA left;
+  final SSA right;
+
+  GreaterThanOrEqual(this.target, this.left, this.right);
+
+  @override
+  Set<SSA> get readsFrom => {left, right};
+
+  @override
+  SSA? get writesTo => target;
+
+  @override
+  OpType get type => ComparisonOp.greaterThanOrEqual;
+
+  @override
+  String toString() => '$target = $left >= $right';
+
+  @override
+  bool operator ==(Object other) =>
+      other is GreaterThanOrEqual &&
+      target == other.target &&
+      left == other.left &&
+      right == other.right;
+
+  @override
+  int get hashCode => target.hashCode ^ left.hashCode ^ right.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return GreaterThanOrEqual(writesTo ?? target, readsFrom?.firstOrNull ?? left,
+        readsFrom?.lastOrNull ?? right);
+  }
+}
+
 final class Return extends Operation {
   final SSA value;
 

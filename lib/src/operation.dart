@@ -111,6 +111,41 @@ class ReloadNode extends Operation {
   }
 }
 
+/// Swaps the physical register contents of two SSA variables in place.
+/// Both variables must share at least one [RegisterGroup] parent (i.e. belong
+/// to the same [RegType]) for a swap to be legal.
+class SwapOp extends Operation {
+  final SSA a;
+  final SSA b;
+
+  SwapOp(this.a, this.b);
+
+  @override
+  Set<SSA> get readsFrom => {a, b};
+
+  @override
+  SSA? get writesTo => null;
+
+  @override
+  OpType get type => AssignmentOp.assign;
+
+  @override
+  String toString() => 'swap $a, $b';
+
+  @override
+  bool operator ==(Object other) =>
+      other is SwapOp && a == other.a && b == other.b;
+
+  @override
+  int get hashCode => a.hashCode ^ b.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    final reads = readsFrom?.toList();
+    return SwapOp(reads?[0] ?? a, reads?[1] ?? b);
+  }
+}
+
 class Assign extends Operation {
   final SSA target;
   final SSA source;

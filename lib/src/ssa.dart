@@ -43,6 +43,13 @@ class SSA {
     }
     throw StateError('SSA is not allocated');
   }
+
+  ImmediateSSA get imm {
+    if (this is ImmediateSSA) {
+      return this as ImmediateSSA;
+    }
+    throw StateError('SSA is not an immediate');
+  }
 }
 
 class AllocatedSSA extends SSA {
@@ -75,6 +82,38 @@ class AllocatedSSA extends SSA {
 
   @override
   int get hashCode => super.hashCode ^ register.hashCode;
+}
+
+class ImmediateSSA extends SSA {
+  ImmediateSSA(super.name, this.value,
+      {super.version = -1, super.type = -1});
+
+  factory ImmediateSSA.fromSSA(SSA ssa, Object? value) {
+    return ImmediateSSA(ssa.name, value,
+        version: ssa.version, type: ssa.type);
+  }
+
+  final Object? value;
+
+  @override
+  String toString() {
+    return '${super.toString()}=$value';
+  }
+
+  @override
+  ImmediateSSA copy() {
+    return ImmediateSSA(name, value, version: version, type: type);
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is ImmediateSSA &&
+        super == other &&
+        value == other.value;
+  }
+
+  @override
+  int get hashCode => super.hashCode ^ value.hashCode;
 }
 
 /// rename variables, also computing def/use information and SSA graph

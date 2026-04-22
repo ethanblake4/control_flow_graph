@@ -48,6 +48,7 @@ void spill(
         : _initBlockUsual(
             graph, blocks, K, groupLock, nextUseDistances, types, block, wend);
 
+
     final preds = graph.predecessorsOf(block).toList();
 
     final sentry = <SSA>{};
@@ -67,22 +68,9 @@ void spill(
       }
     }
 
-    /*for (final pred in preds) {
-      if (wend[pred] == null) {
-        continue;
-      }
-      final reload = wentry.difference(wend[pred]!);
-      for (final ssa in reload) {
-        final code = blocks[pred]!.code;
-        //print('preds reload $ssa in block $pred');
-        //code.insert(code.length, reloadFunc(ssa));
-      }
-    }*/
-
     final (we, se) = _minAlgorithm(blocks[block]!, wentry, sentry, types,
         nextUseDistances[block]!, K, takeSlots, uses, spillFunc, reloadFunc);
 
-    //print('block $block wend $we send $se');
 
     wend[block] = we;
     send[block] = se;
@@ -99,7 +87,6 @@ void spill(
       for (final ssa in reload) {
         final code = blocks[block]!.code;
         code.insert(code.length, reloadFunc(ssa));
-        //print('reload $ssa in block $block');
       }
       defer.remove(block);
     }
@@ -133,9 +120,6 @@ in front of insn
     Map<SSA, Set<SpecifiedOperation>> uses,
     SpillFunc spillFunc,
     ReloadFunc reloadFunc) {
-  //print(block.id);
-  //print(W);
-  //print(nextUseDistances);
   final groupLock = <SSA, RegisterGroup>{};
   var comp = 0;
   for (var i = 0; i < block.code.length; i++) {
@@ -151,13 +135,12 @@ in front of insn
 
     int spills;
 
-    //print('limit $insn W: $W S: $S');
     if (insn is PhiNode) {
       W.removeAll(insn.sources);
     }
 
     (W, spills) = _limit(block, i, comp, W, S, insn, types, groupLock, K,
-        nextUseDistances, spillFunc);
+        nextUseDistances, spillFunc, 0);
     i += spills;
     comp += spills;
 
@@ -167,6 +150,14 @@ in front of insn
     final wtf = wtc.where((c) => !c.name.startsWith('@'));
     final isControlFlow = insn.writesTo == ControlFlowGraph.branch;
     final isLast = i == block.code.length - 1;
+
+    // Variables that are uses of the current instruction and already in W
+    // must not be spilled by the second limit call — they're needed right
+    // now and no reload would be inserted for them.
+    final protectedUses = insn is PhiNode
+        ? <SSA>{}
+        : insn.readsFrom.intersection(W)
+          ..removeWhere((e) => e.name.startsWith('@'));
 
     if (!isControlFlow) {
       final next = isLast ? block.code[i] : block.code[i + 1];
@@ -201,10 +192,14 @@ in front of insn
         nextK = K;
       }
 
-      //print('limi2 $insn W: $W S: $S');
-
-      (W, spills) = _limit(block, i, comp, W, S, next, types, groupLock, nextK,
-          nextUseDistances, spillFunc);
+      // Protect uses of the current instruction in W from being spilled by
+      // the second limit call.  They are needed right now and must remain
+      // in registers; evicting them without a spill is fine, but generating
+      // a spill for them here would leave them unavailable to the instruction
+      // with no corresponding reload inserted.
+      final sForSecondLimit = {...S, ...protectedUses};
+      (W, spills) = _limit(block, i, comp, W, sForSecondLimit, next,
+          types, groupLock, nextK, nextUseDistances, spillFunc, 1);
       i += spills;
       comp += spills;
     }
@@ -212,13 +207,10 @@ in front of insn
     W.addAll(wtf);
     for (final use in R) {
       // add reloads for vars in R in front of insn
-      //print('areload $use in block ${block.id}');
       block.code.insert(i, reloadFunc(use));
       i++;
       comp++;
     }
-
-    //print('postl $insn W: $W S: $S');
   }
   return (W, S);
 }
@@ -244,9 +236,10 @@ W ← W[0:m]
   Map<RegisterGroup, int> K,
   Map<SSA, SplayTreeSet<int>> nextUseDistances,
   SpillFunc spillFunc,
+  int ciOffset
 ) {
   final nextUseAtInsn = <SSA, int>{};
-  var ci = i - comp;
+  var ci = i - comp /*+ ciOffset*/;
   // for each next use choose smallest value greater than i, or int32Max
   for (final v in W) {
     final nextUse = nextUseDistances[v]
@@ -254,7 +247,6 @@ W ← W[0:m]
         int32Max;
     nextUseAtInsn[v] = nextUse == int32Max ? int32Max : nextUse - ci;
   }
-  //print('nu $insn ${intMapString(nextUseAtInsn)}');
   final Wsorted = W.toList()
     ..sort((a, b) => nextUseAtInsn[a]! - nextUseAtInsn[b]!);
 

@@ -1,4 +1,5 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
+import 'package:control_flow_graph/src/operation.dart';
 import 'package:control_flow_graph/src/types.dart';
 import 'package:more/more.dart';
 
@@ -89,7 +90,17 @@ void removePhiNodesFrom(
       final code = predecessor.code;
       for (final entry in replacement.value.entries) {
         final index = code.indexWhere((element) => element == entry.key);
-        code[index] = code[index].copyWith(writesTo: entry.value);
+        final oldTarget = entry.key.writesTo!;
+        final newTarget = entry.value;
+        code[index] = code[index].copyWith(writesTo: newTarget);
+        for (var i = 0; i < code.length; i++) {
+          final op = code[i];
+          if (op is SpillNode && op.target == oldTarget) {
+            code[i] = SpillNode(newTarget);
+          } else if (op is ReloadNode && op.target == oldTarget) {
+            code[i] = ReloadNode(newTarget);
+          }
+        }
       }
     }
 

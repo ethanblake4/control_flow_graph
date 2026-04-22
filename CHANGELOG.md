@@ -1,3 +1,9 @@
+## 1.3.0
+- Added working register allocation algorithm
+- Add machine code generation
+- Fixed spill algorithm
+- Added ImmediateSSA to represent immediate values in IR
+
 ## 1.2.0
 - Added new utilities to builder class
 - Improved SSA renaming algorithm

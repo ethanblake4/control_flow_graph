@@ -1,7 +1,8 @@
 import 'dart:collection';
 
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/allocator/regalloc_2.dart';
+import 'package:control_flow_graph/src/allocator/regalloc_new.dart'
+    as regalloc_new;
 import 'package:control_flow_graph/src/allocator/register_pressure.dart';
 import 'package:control_flow_graph/src/allocator/spill.dart';
 import 'package:control_flow_graph/src/dj_graph.dart';
@@ -11,6 +12,7 @@ import 'package:control_flow_graph/src/liveness.dart';
 import 'package:control_flow_graph/src/loop.dart';
 import 'package:control_flow_graph/src/merge_set.dart';
 import 'package:control_flow_graph/src/next_use.dart';
+import 'package:control_flow_graph/src/assembler.dart';
 import 'package:control_flow_graph/src/operation.dart';
 import 'package:control_flow_graph/src/optimizations/copy_propagation.dart';
 import 'package:control_flow_graph/src/optimizations/dce.dart';
@@ -408,34 +410,6 @@ class ControlFlowGraph {
         registerPressure, nextUseDistances, uses!, allLiveIn, sp, re);
   }
 
-  void goAllocateRegisters(Map<RegisterGroup, int> registerCounts) {
-    if (!inSSAForm) {
-      throw StateError('Cannot spill/reload variables in non-SSA form');
-    }
-    Operation sp(SSA ssa) => SpillNode(ssa);
-    Operation re(SSA ssa) {
-      return ReloadNode(ssa);
-    }
-
-    Operation copy(SSA dst, SSA src) => Assign(dst, src);
-    regalloc(
-        graph,
-        root.id!,
-        _ids,
-        loops,
-        regTypes,
-        opCreators,
-        registerCounts,
-        registerPressure,
-        nextUseDistances,
-        uses!,
-        allLiveIn,
-        allLiveOut,
-        sp,
-        re,
-        copy);
-  }
-
   /// Remove Phi nodes from the control flow graph, replacing them with normal
   /// assignment operations.
   void removePhiNodes(Operation Function(SSA left, SSA right) assign) {
@@ -448,6 +422,56 @@ class ControlFlowGraph {
     removePhiNodesFrom(graph, ssaGraph, _ids, root.id!, assign);
     _hasPhiNodes = false;
     //_inSSAForm = false;
+  }
+
+  /// Assign physical registers to every SSA variable in the CFG.
+  ///
+  /// Must be called **after** [removePhiNodes] and [spillReloadVariables].
+  /// Each SSA variable is replaced by an [AllocatedSSA] (physical register)
+  /// or an [ImmediateSSA] (for `@N` compile-time immediates). The `@branch`
+  /// sentinel is left unmodified.
+  ///
+  /// Physical register constraints are read from [opCreators]; the
+  /// [Variant.result] and [Variant.arguments] slot numbers are treated as
+  /// literal physical register indices.
+  void performRegisterAllocation() {
+    if (!inSSAForm) {
+      throw StateError(
+          'Cannot allocate registers before converting to SSA form');
+    }
+    regalloc_new.allocateRegisters(
+        graph,
+        root.id!,
+        _ids,
+        regTypes,
+        opCreators,
+        allLiveIn,
+        allLiveOut,
+        nextUseDistances);
+  }
+
+  /// Assembles the post-register-allocation IR into concrete [Instruction]
+  /// lists, one per basic block, keyed by block ID.
+  ///
+  /// Must be called **after** [performRegisterAllocation].  All operands in
+  /// the IR must already be [AllocatedSSA] or [ImmediateSSA] at this point.
+  ///
+  /// [config] provides the user-defined callbacks for synthesised operations
+  /// (spill/reload/move/swap) and carries the context data forwarded to every
+  /// [InstructionCreator.createInstruction] call.
+  ///
+  /// Returns a [Map] from block ID to the ordered list of [Instruction]s
+  /// emitted for that block.  Blocks are visited in breadth-first order
+  /// starting from the root, which is the same order used by [toString].
+  Map<int, List<Instruction>> assembleToInstructions<C>(
+      AssemblerConfig<C> config) {
+    if (!inSSAForm) {
+      throw StateError(
+          'Cannot assemble before converting to SSA form');
+    }
+    final blockOrder = graph.breadthFirst(root.id!).toList();
+    return assembleBlocksToInstructions(_ids, blockOrder, opCreators, config,
+        graph: graph);
   }
 
   @override

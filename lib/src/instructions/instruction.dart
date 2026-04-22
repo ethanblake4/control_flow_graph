@@ -15,7 +15,11 @@ class Variant {
     required this.result,
     this.arguments = const [],
   });
+
+  /// Register index that the instruction writes to, or null if it doesn't write to any register
   final int? result;
+
+  /// List of register indices that the instruction reads from
   final List<int> arguments;
 }
 

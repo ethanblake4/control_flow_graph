@@ -3,6 +3,7 @@ import 'package:control_flow_graph/src/loop.dart';
 import 'package:control_flow_graph/src/types.dart';
 import 'package:test/test.dart';
 
+import 'sample_instruction_set.dart';
 import 'sample_ir.dart';
 
 void main() {
@@ -82,6 +83,7 @@ void main() {
 
   group('Standard for loop', () {
     var hasSpilled = false;
+    var hasRemovedPhi = false;
     final cfg = ControlFlowGraph.builder()
         .root(BasicBlock([
           LoadImmediate(SSA('x', type: 0), 0),
@@ -106,23 +108,16 @@ void main() {
     cfg.link(cfg[2]!, cfg[1]!);
     cfg.loops.add(Loop(1, {1, 2}, {(2, 3)}));
 
-    final group0 = RegisterGroup({0, 1});
+    final group0 = RegisterGroup({0, 1, 2});
     cfg.registerRegType(0, RegType(0, 'gpr', {group0}));
 
     cfg.opCreators.addAll({
-      LoadImmediate: Creator<LoadImmediate, void>(variants: {
-        Variant(result: 0, arguments: []),
-        Variant(result: 1, arguments: []),
-        Variant(result: 2, arguments: []),
-      }, create: (operation, context) => INoop()),
+      LoadImmediate: Imm.creator,
       LessThan: Creator<LessThan, void>(variants: {
         Variant(result: 0, arguments: [0, 1]),
         Variant(result: 1, arguments: [0, 1])
       }, create: (operation, context) => INoop()),
-      Add: Creator<Add, void>(variants: {
-        Variant(result: 0, arguments: [0, 1]),
-        Variant(result: 2, arguments: [0, 1])
-      }, create: (operation, context) => INoop()),
+      Add: Iadd.creator,
       Return: Creator<Return, void>(variants: {
         Variant(result: null, arguments: [0]),
       }, create: (operation, context) => INoop()),
@@ -315,7 +310,7 @@ return x₁\n
 
       cfg.removeUnusedDefines();
 
-      cfg.spillReloadVariables({group0: 2});
+      cfg.spillReloadVariables({group0: 3});
       hasSpilled = true;
       expect(() => {print(cfg)}, prints('''
 B0:
@@ -326,23 +321,18 @@ i₀ = imm 0
 B1:
 i₁ = φ(i₀, i₂)  
 x₁ = φ(x₀, x₂)  
-spill x₁  
 n₁ = imm 11  
 @branch = i₁ < n₁
 → (B2, B3)
 
 B2:
 spill n₁  
-reload x₁  
 x₂ = x₁ + i₁  
 @1 = imm 1  
-spill x₂  
-i₂ = i₁ + @1  
-reload x₂
+i₂ = i₁ + @1
 → (B1)
 
 B3:
-reload x₁  
 return x₁\n
 '''));
     });
@@ -370,23 +360,18 @@ i₀ = imm 0
 B1:
 i₁ = φ(i₀, i₂)  
 x₁ = φ(x₀, x₂)  
-spill x₁  
 n₁ = imm 11  
 @branch = i₁ < n₁
 → (B2, B3)
 
 B2:
 spill n₁  
-reload x₁  
 x₂ = x₁ + i₁  
 @1 = imm 1  
-spill x₂  
-i₂ = i₁ + @1  
-reload x₂
+i₂ = i₁ + @1
 → (B1)
 
 B3:
-reload x₁  
 return x₁\n
 '''));
     });
@@ -405,6 +390,7 @@ return x₁\n
 
       cfg.removeEmptyAndUnusedBlocks();
       cfg.removePhiNodes((l, r) => Assign(l, r));
+      hasRemovedPhi = true;
       expect(() => print(cfg), prints('''
 B0:
 x₁ = imm 0  
@@ -412,25 +398,65 @@ i₁ = imm 0
 → (B1)
 
 B1:
-spill x₁  
 n₁ = imm 11  
 @branch = i₁ < n₁
 → (B2, B3)
 
 B2:
 spill n₁  
-reload x₁  
 x₁ = x₁ + i₁  
 @1 = imm 1  
-spill x₂  
-i₁ = i₁ + @1  
-reload x₂
+i₁ = i₁ + @1
 → (B1)
 
 B3:
-reload x₁  
 return x₁\n
 '''));
+    });
+
+    test('Allocate registers', () {
+      // insertPhiNodes only if we haven't yet entered SSA form at all.
+      if (!cfg.inSSAForm && !cfg.hasPhiNodes) {
+        cfg.insertPhiNodes();
+      }
+      if (!cfg.inSSAForm) {
+        cfg.computeSemiPrunedSSA();
+      }
+      cfg.removeUnusedDefines();
+      if (!hasSpilled) {
+        cfg.spillReloadVariables({group0: 3});
+        hasSpilled = true;
+      }
+      cfg.removeEmptyAndUnusedBlocks();
+      if (!hasRemovedPhi) {
+        cfg.removePhiNodes((l, r) => Assign(l, r));
+        hasRemovedPhi = true;
+      }
+      cfg.performRegisterAllocation();
+      print(cfg);
+
+      // Every non-@ writesTo must be AllocatedSSA.
+      // Every non-@branch readsFrom must be AllocatedSSA (regular) or
+      // ImmediateSSA (@N numeric immediates).
+      for (final blockId in cfg.allLiveIn.keys) {
+        for (final op in cfg[blockId]!.code) {
+          final wt = op.writesTo;
+          if (wt != null && !wt.name.startsWith('@')) {
+            expect(wt, isA<AllocatedSSA>(),
+                reason: 'writesTo of "$op" should be AllocatedSSA');
+          }
+          for (final r in op.readsFrom) {
+            if (r.name == '@branch') continue;
+            if (r.name.startsWith('@')) {
+              expect(r, isA<ImmediateSSA>(),
+                  reason: 'immediate operand "$r" of "$op" should be ImmediateSSA');
+            } else {
+              expect(r, isA<AllocatedSSA>(),
+                  reason: 'operand "$r" of "$op" should be AllocatedSSA');
+            }
+          }
+        }
+      }
     });
   });
 
@@ -798,7 +824,7 @@ i₂ = imm 0
 '''));
     });
 
-    test('Remove phi nodes', () {
+    test('Allocate registers', () {
       if (!cfg.hasPhiNodes) {
         cfg.insertPhiNodes();
       }
@@ -814,38 +840,7 @@ i₂ = imm 0
       if (!removedBlocks) {
         cfg.removeEmptyAndUnusedBlocks();
       }
-      cfg.removePhiNodes((l, r) => Assign(l, r));
-      expect(() => print(cfg), prints('''
-c1(0):
-a₀ = imm 0  
-b₀ = imm 0
-→ (c2(1))
-
-c2(1):
-a₂ = imm 2
-→ (c3(2))
-
-c3(2):
-b₂ = imm 3  
-@branch = a₂ < b₂
-→ (c5(5), c9(8))
-
-c5(5):
-b₉ = imm 10
-→ (c6(6))
-
-c9(8):
-b₉ = imm 0
-→ (c6(6))
-
-c6(6):
-@branch = b₉ < a₂
-→ (c5(5), c7(7))
-
-c7(7):
-i₂ = imm 0
-→ (c2(1))\n\n
-'''));
     });
+
   });
 }
