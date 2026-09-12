@@ -17,6 +17,14 @@ abstract class Operation {
   /// variables.
   Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom});
 
+  /// Whether an unused result can be discarded without observable effects.
+  ///
+  /// Pure operations must not mutate state, perform I/O, throw, or affect
+  /// control flow. Reading mutable state is not sufficient to justify other
+  /// transformations such as common-subexpression elimination. Operations
+  /// are conservatively effectful unless they explicitly opt in.
+  bool get isPure => false;
+
   /// Whether this operation is rematerializable. Rematerializable operations
   /// can be recomputed on-the-fly and do not need to be spilled to memory.
   bool get isRematerializable => false;
@@ -35,6 +43,9 @@ class PhiNode extends Operation {
 
   /// The set of source variables of this phi node.
   final Set<SSA> sources;
+
+  @override
+  bool get isPure => true;
 
   @override
   Set<SSA> get readsFrom => sources;
@@ -151,6 +162,9 @@ class Assign extends Operation {
   final SSA source;
 
   Assign(this.target, this.source);
+
+  @override
+  bool get isPure => true;
 
   @override
   Set<SSA> get readsFrom => {source};

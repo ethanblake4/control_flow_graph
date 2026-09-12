@@ -85,12 +85,10 @@ class AllocatedSSA extends SSA {
 }
 
 class ImmediateSSA extends SSA {
-  ImmediateSSA(super.name, this.value,
-      {super.version = -1, super.type = -1});
+  ImmediateSSA(super.name, this.value, {super.version = -1, super.type = -1});
 
   factory ImmediateSSA.fromSSA(SSA ssa, Object? value) {
-    return ImmediateSSA(ssa.name, value,
-        version: ssa.version, type: ssa.type);
+    return ImmediateSSA(ssa.name, value, version: ssa.version, type: ssa.type);
   }
 
   final Object? value;
@@ -107,9 +105,7 @@ class ImmediateSSA extends SSA {
 
   @override
   bool operator ==(Object other) {
-    return other is ImmediateSSA &&
-        super == other &&
-        value == other.value;
+    return other is ImmediateSSA && super == other && value == other.value;
   }
 
   @override
@@ -119,6 +115,18 @@ class ImmediateSSA extends SSA {
 /// rename variables, also computing def/use information and SSA graph
 SSAComputationData semiPrunedSSARename(CFG graph, int root,
     Map<int, BasicBlock> ids, Map<String, Set<int>> globals) {
+  // Operands may be shared by frontend operations. Renaming must never mutate
+  // another definition through that alias, nor alias a read to its own result.
+  for (final blockId in graph.depthFirstPostOrder(root)) {
+    final code = ids[blockId]!.code;
+    for (var index = 0; index < code.length; index++) {
+      final op = code[index];
+      code[index] = op.copyWith(
+        writesTo: op.writesTo?.copy(),
+        readsFrom: {for (final input in op.readsFrom) input.copy()},
+      );
+    }
+  }
   final definitions = globals.keys.toMap(key: (k) => k, value: (_) => 0);
   final visited = <int>{};
   final worklist = ListQueue<(int, Map<String, int>)>.of([
@@ -181,11 +189,9 @@ SSAComputationData semiPrunedSSARename(CFG graph, int root,
           ssa.version = v;
         }
         uses.putIfAbsent(ssa, () => Set.identity()).add(spec);
-        if (writesTo != null) {
-          final def = defines[ssa];
-          if (def != null) {
-            ssaGraph.addEdge(def, spec);
-          }
+        final def = defines[ssa];
+        if (def != null) {
+          ssaGraph.addEdge(def, spec);
         }
       }
 
