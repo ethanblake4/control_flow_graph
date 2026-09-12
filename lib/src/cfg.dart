@@ -188,6 +188,25 @@ class ControlFlowGraph {
     _liveoutMsCache.clear();
   }
 
+  /// Removes blocks unreachable from [root] before SSA construction.
+  ///
+  /// Keeping unreachable predecessors of a reachable join can invalidate
+  /// dominator and merge-set computations. IDs of surviving blocks stay stable.
+  void removeUnreachableBlocks() {
+    if (hasPhiNodes || inSSAForm) {
+      throw StateError('Remove unreachable blocks before SSA construction');
+    }
+    final reachable = graph.depthFirstPostOrder(root.id!).toSet();
+    final removed =
+        graph.vertices.where((id) => !reachable.contains(id)).toList();
+    for (final id in removed) {
+      graph.removeVertex(id);
+      _ids.remove(id);
+    }
+    labels.removeWhere((label, id) => !reachable.contains(id));
+    invalidate();
+  }
+
   /// Get the basic block with the given ID or label.
   BasicBlock? operator [](Object id) {
     if (id is int) {
@@ -439,15 +458,8 @@ class ControlFlowGraph {
       throw StateError(
           'Cannot allocate registers before converting to SSA form');
     }
-    regalloc_new.allocateRegisters(
-        graph,
-        root.id!,
-        _ids,
-        regTypes,
-        opCreators,
-        allLiveIn,
-        allLiveOut,
-        nextUseDistances);
+    regalloc_new.allocateRegisters(graph, root.id!, _ids, regTypes, opCreators,
+        allLiveIn, allLiveOut, nextUseDistances);
   }
 
   /// Assembles the post-register-allocation IR into concrete [Instruction]
@@ -466,8 +478,7 @@ class ControlFlowGraph {
   Map<int, List<Instruction>> assembleToInstructions<C>(
       AssemblerConfig<C> config) {
     if (!inSSAForm) {
-      throw StateError(
-          'Cannot assemble before converting to SSA form');
+      throw StateError('Cannot assemble before converting to SSA form');
     }
     final blockOrder = graph.breadthFirst(root.id!).toList();
     return assembleBlocksToInstructions(_ids, blockOrder, opCreators, config,
@@ -498,7 +509,7 @@ class ControlFlowGraphBuilder {
 
   BasicBlockBuilder root(BasicBlock root) {
     final cfg = ControlFlowGraph();
-    root.id = cfg.lastBlockId++;
+    cfg.append(root);
     return BasicBlockBuilder(cfg, [root], null);
   }
 }

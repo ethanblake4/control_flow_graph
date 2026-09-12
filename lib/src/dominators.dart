@@ -27,12 +27,15 @@ Map<int, int> computeDominators(CFG graph, int root) {
 
   var changed = true;
   while (changed) {
+    changed = false;
     for (final node in reversePostorder) {
       if (node == root) {
         continue;
       }
-      changed = false;
-      final predecessors = graph.predecessorsOf(node);
+      final predecessors = graph
+          .predecessorsOf(node)
+          .where((predecessor) => doms[predecessor] != null)
+          .toList();
       int? newIdom = predecessors.firstOrNull;
       for (final predecessor in predecessors.skip(1)) {
         if (doms[predecessor] != null) {
