@@ -1,5 +1,4 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/instructions/context.dart';
 import 'package:control_flow_graph/src/operation.dart';
 import 'package:control_flow_graph/src/types.dart';
 
@@ -83,17 +82,17 @@ class AssemblerConfig<C> {
   final ReloadCallback<C> onReload;
 
   /// Called once per synthesised [Assign] (register move).  If `null`,
-  /// moves are silently dropped.
+  /// assembly fails when a move is required.
   final MoveCallback<C>? onMove;
 
   /// Called once per synthesised [SwapOp] (register swap).  If `null`,
-  /// swaps are silently dropped.
+  /// assembly fails when a swap is required.
   final SwapCallback<C>? onSwap;
 
   /// Called when a block's sole successor is not the next block in the layout
   /// order, requiring an explicit unconditional jump.  If `null`, the jump is
-  /// silently omitted (useful when the caller controls block ordering
-  /// externally).
+  /// rejected if an implicit jump is required. Explicit terminators do not
+  /// trigger this callback.
   final JumpCallback<C>? onJump;
 }
 
@@ -135,7 +134,7 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
     return idx;
   }
 
-  AllocatedSSA _requireAllocated(SSA ssa, Operation op) {
+  AllocatedSSA requireAllocated(SSA ssa, Operation op) {
     if (ssa is AllocatedSSA) return ssa;
     throw StateError(
         'Expected AllocatedSSA for operand "$ssa" of "$op" but got ${ssa.runtimeType}. '
@@ -154,14 +153,13 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
     // instruction creators (e.g. conditional-branch instructions) can resolve
     // target block IDs without needing a separate lookup.
     context.currentBlockId = blockId;
-    context.successorBlockIds = graph == null
-        ? const []
-        : graph.successorsOf(blockId).toList();
+    context.successorBlockIds =
+        graph == null ? const [] : graph.successorsOf(blockId).toList();
 
     for (final op in block.code) {
       // ---- SpillNode --------------------------------------------------------
       if (op is SpillNode) {
-        final v = _requireAllocated(op.target, op);
+        final v = requireAllocated(op.target, op);
         final key = _SlotKey(v.name, v.version);
         final slot = slotAssignments.putIfAbsent(key, () => nextSlot(v.type));
         instructions.add(config.onSpill(v, slot, context));
@@ -170,7 +168,7 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
 
       // ---- ReloadNode -------------------------------------------------------
       if (op is ReloadNode) {
-        final v = _requireAllocated(op.target, op);
+        final v = requireAllocated(op.target, op);
         final key = _SlotKey(v.name, v.version);
         // If a reload is seen before a corresponding spill (e.g. after
         // rematerialisation), assign a fresh slot.
@@ -182,9 +180,10 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
       // ---- Assign (register move) ------------------------------------------
       if (op is Assign) {
         final onMove = config.onMove;
-        if (onMove != null) {
-          final target = _requireAllocated(op.target, op);
-          final source = _requireAllocated(op.source, op);
+        if (onMove == null) throw StateError('Missing onMove callback');
+        {
+          final target = requireAllocated(op.target, op);
+          final source = requireAllocated(op.source, op);
           instructions.add(onMove(target, source, context));
         }
         continue;
@@ -193,9 +192,10 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
       // ---- SwapOp (register swap) ------------------------------------------
       if (op is SwapOp) {
         final onSwap = config.onSwap;
-        if (onSwap != null) {
-          final a = _requireAllocated(op.a, op);
-          final b = _requireAllocated(op.b, op);
+        if (onSwap == null) throw StateError('Missing onSwap callback');
+        {
+          final a = requireAllocated(op.a, op);
+          final b = requireAllocated(op.b, op);
           instructions.add(onSwap(a, b, context));
         }
         continue;
@@ -203,27 +203,43 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
 
       // ---- PhiNode (should be absent by assembly time) ---------------------
       if (op is PhiNode) {
-        // Phi nodes must be removed before assembly; skip defensively.
-        continue;
+        throw StateError('Phi nodes must be removed before assembly');
       }
 
       // ---- Regular user-defined operation ----------------------------------
       final creator = opCreators[op.runtimeType];
-      if (creator != null) {
-        instructions.add(creator.createInstruction(op, context));
+      if (creator == null) {
+        throw StateError('No instruction creator for ${op.runtimeType}');
       }
+      for (final input in op.readsFrom) {
+        if (input is! AllocatedSSA &&
+            input is! ImmediateSSA &&
+            input != ControlFlowGraph.branch) {
+          throw StateError('Unallocated input $input in $op');
+        }
+      }
+      final output = op.writesTo;
+      if (output != null &&
+          output is! AllocatedSSA &&
+          output is! ImmediateSSA &&
+          output != ControlFlowGraph.branch) {
+        throw StateError('Unallocated output $output in $op');
+      }
+      instructions.add(creator.createInstruction(op, context));
     }
 
     // ---- Unconditional jump (if needed) ------------------------------------
     // If this block has exactly one successor and it is not the next block in
     // the layout, a fall-through is impossible — emit an explicit jump.
     final onJump = config.onJump;
-    if (onJump != null && context.successorBlockIds.length == 1) {
+    if (context.successorBlockIds.length == 1 &&
+        (block.code.isEmpty || !block.code.last.isTerminator)) {
       final successorId = context.successorBlockIds.first;
       final nextBlockId = blockIndex + 1 < blockOrderList.length
           ? blockOrderList[blockIndex + 1]
           : null;
       if (successorId != nextBlockId) {
+        if (onJump == null) throw StateError('Missing onJump callback');
         instructions.add(onJump(successorId, context));
       }
     }

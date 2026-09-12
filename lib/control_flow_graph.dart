@@ -11,3 +11,5 @@ export 'src/operation.dart' hide SpillNode, ReloadNode;
 export 'src/ssa.dart' show SSA, AllocatedSSA, ImmediateSSA;
 export 'src/instructions/context.dart' show AssembleContext;
 export 'src/instructions/instruction.dart';
+
+export 'src/types.dart' show RegType, RegisterGroup;

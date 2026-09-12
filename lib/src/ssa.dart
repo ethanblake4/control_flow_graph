@@ -129,8 +129,12 @@ SSAComputationData semiPrunedSSARename(CFG graph, int root,
   }
   final definitions = globals.keys.toMap(key: (k) => k, value: (_) => 0);
   final visited = <int>{};
-  final worklist = ListQueue<(int, Map<String, int>)>.of([
-    (root, {for (final entry in definitions.entries) entry.key: entry.value})
+  final worklist = ListQueue<(int, int?, Map<String, int>)>.of([
+    (
+      root,
+      null,
+      {for (final entry in definitions.entries) entry.key: entry.value}
+    )
   ]);
 
   final blockDefines = <int, Set<SSA>>{};
@@ -140,7 +144,7 @@ SSAComputationData semiPrunedSSARename(CFG graph, int root,
 
   workloop:
   while (worklist.isNotEmpty) {
-    final (blockId, versions) = worklist.removeFirst();
+    final (blockId, predecessor, versions) = worklist.removeFirst();
     final unseen = visited.add(blockId);
     final block = ids[blockId]!;
     var remove = <PhiNode>[];
@@ -165,6 +169,7 @@ SSAComputationData semiPrunedSSARename(CFG graph, int root,
         }
         final src = SSA(v.name, type: v.type, version: version);
         op.sources.add(src);
+        if (predecessor != null) op.incoming[predecessor] = src;
         uses.putIfAbsent(src, () => Set.identity()).add(spec);
         final def = defines[src];
         if (def != null) {
@@ -212,7 +217,7 @@ SSAComputationData semiPrunedSSARename(CFG graph, int root,
     }
 
     for (final next in graph.successorsOf(blockId)) {
-      worklist.add((next, {...versions}));
+      worklist.add((next, blockId, {...versions}));
     }
   }
 

@@ -46,7 +46,11 @@ Map<int, Map<SSA, SplayTreeSet<int>>> computeGlobalNextUseDistances(
       final nextUseOut = nextUseOuts[blockId]!;
       for (final succ in graph.successorsOf(blockId)) {
         final edge = (blockId, succ);
+        final succDefines = blockDefines[succ] ?? const {};
         for (final useIn in nextUseIns[succ]!.entries) {
+          // Skip variables defined in succ: they are created fresh there, so
+          // predecessors cannot satisfy the use by carrying the old value.
+          if (succDefines.contains(useIn.key)) continue;
           if (!nextUseOut.containsKey(useIn.key) ||
               useIn.value.first < nextUseOut[useIn.key]!) {
             nextUseOut[useIn.key] =

@@ -431,14 +431,16 @@ class ControlFlowGraph {
 
   /// Remove Phi nodes from the control flow graph, replacing them with normal
   /// assignment operations.
-  void removePhiNodes(Operation Function(SSA left, SSA right) assign) {
+  void removePhiNodes(Operation Function(SSA left, SSA right) assign,
+      {void Function(int predecessor, int oldTarget, int newTarget)?
+          onSplitEdge}) {
     if (!hasPhiNodes) {
       throw StateError('No phi nodes to remove');
     }
     if (!inSSAForm) {
       throw StateError('Cannot remove phi nodes from non-SSA form');
     }
-    removePhiNodesFrom(graph, ssaGraph, _ids, root.id!, assign);
+    removePhiNodesFrom(this, assign, onSplitEdge: onSplitEdge);
     _hasPhiNodes = false;
     //_inSSAForm = false;
   }
@@ -458,8 +460,56 @@ class ControlFlowGraph {
       throw StateError(
           'Cannot allocate registers before converting to SSA form');
     }
+    // Phi removal creates multiple definitions and may split edges. Compute
+    // ordinary liveness from the lowered code rather than stale SSA caches.
+    final liveIn = <int, Set<SSA>>{};
+    final liveOut = <int, Set<SSA>>{};
+    final localUses = <int, Set<SSA>>{};
+    final localDefs = <int, Set<SSA>>{};
+    final distances = <int, Map<SSA, SplayTreeSet<int>>>{};
+    for (final id in graph.vertices) {
+      liveIn[id] = {};
+      liveOut[id] = {};
+      final reads = localUses[id] = <SSA>{};
+      final writes = localDefs[id] = <SSA>{};
+      final uses = distances[id] = {};
+      final code = _ids[id]!.code;
+      for (var index = 0; index < code.length; index++) {
+        final op = code[index];
+        final inputs = op is SpillNode ? {op.target} : op.readsFrom;
+        for (final input in inputs) {
+          if (!writes.contains(input)) reads.add(input);
+          uses.putIfAbsent(input, () => SplayTreeSet<int>()).add(index);
+        }
+        final output = op is ReloadNode ? op.target : op.writesTo;
+        if (output != null && output != ControlFlowGraph.branch) {
+          writes.add(output);
+        }
+      }
+    }
+    bool changed;
+    do {
+      changed = false;
+      for (final id in graph.vertices.toList().reversed) {
+        final outgoing = <SSA>{
+          for (final next in graph.successorsOf(id)) ...liveIn[next]!
+        };
+        final incoming = {
+          ...localUses[id]!,
+          ...outgoing.difference(localDefs[id]!)
+        };
+        if (outgoing.length != liveOut[id]!.length ||
+            !outgoing.containsAll(liveOut[id]!) ||
+            incoming.length != liveIn[id]!.length ||
+            !incoming.containsAll(liveIn[id]!)) {
+          liveOut[id] = outgoing;
+          liveIn[id] = incoming;
+          changed = true;
+        }
+      }
+    } while (changed);
     regalloc_new.allocateRegisters(graph, root.id!, _ids, regTypes, opCreators,
-        allLiveIn, allLiveOut, nextUseDistances);
+        liveIn, liveOut, distances);
   }
 
   /// Assembles the post-register-allocation IR into concrete [Instruction]

@@ -58,13 +58,22 @@ void spill(
 
     for (final pred in preds) {
       if (send[pred] == null) {
-        defer[pred] = (wentry, sentry);
+        // Phi targets are defined inside this block by its own phi nodes.
+        // Back-edge predecessors must not be required to provide them.
+        final phiTargets = blocks[block]!
+            .code
+            .whereType<PhiNode>()
+            .map((p) => p.target)
+            .toSet();
+        final phiSources = blocks[block]!.code.whereType<PhiNode>()
+            .expand((phi) => phi.sources).toSet();
+        defer[pred] = (wentry.difference({...phiTargets, ...phiSources}), sentry);
         continue;
       }
       final spill = sentry.difference(send[pred]!).intersection(wend[pred]!);
       for (final ssa in spill) {
         final code = blocks[pred]!.code;
-        code.insert(code.length, spillFunc(ssa));
+        code.insert(_beforeTerminator(code), spillFunc(ssa));
       }
     }
 
@@ -80,18 +89,22 @@ void spill(
       final spill = deferS.difference(se).intersection(we);
       for (final ssa in spill) {
         final code = blocks[block]!.code;
-        code.insert(code.length, spillFunc(ssa));
+        code.insert(_beforeTerminator(code), spillFunc(ssa));
       }
 
       final reload = deferW.difference(we);
       for (final ssa in reload) {
         final code = blocks[block]!.code;
-        code.insert(code.length, reloadFunc(ssa));
+        code.insert(_beforeTerminator(code), reloadFunc(ssa));
       }
       defer.remove(block);
     }
   }
 }
+
+int _beforeTerminator(List<Operation> code) => code.isNotEmpty &&
+        (code.last.isTerminator || code.last.writesTo == ControlFlowGraph.branch)
+    ? code.length - 1 : code.length;
 
 /*
 Algorithm 1 The Min algorithm
@@ -239,7 +252,7 @@ W ← W[0:m]
   int ciOffset
 ) {
   final nextUseAtInsn = <SSA, int>{};
-  var ci = i - comp /*+ ciOffset*/;
+  var ci = i - comp + ciOffset;
   // for each next use choose smallest value greater than i, or int32Max
   for (final v in W) {
     final nextUse = nextUseDistances[v]
@@ -381,7 +394,8 @@ def initUsual(block):
 
   final result = {...take};
 
-  for (final gr in takeSlots.keys) {
+  for (final gr in K.keys) {
+    takeSlots.putIfAbsent(gr, () => 0);
     while (K[gr]! - takeSlots[gr]! > 0) {
       final v = next(gr);
       if (v == null) {

@@ -25,6 +25,9 @@ abstract class Operation {
   /// are conservatively effectful unless they explicitly opt in.
   bool get isPure => false;
 
+  /// Whether this operation transfers control and must end its block.
+  bool get isTerminator => false;
+
   /// Whether this operation is rematerializable. Rematerializable operations
   /// can be recomputed on-the-fly and do not need to be spilled to memory.
   bool get isRematerializable => false;
@@ -36,7 +39,11 @@ abstract class Operation {
 /// [ControlFlowGraph.insertPhiNodes] method instead.
 class PhiNode extends Operation {
   /// Creates a new phi node operation with the given [target] and [sources].
-  PhiNode(this.target, this.sources);
+  PhiNode(this.target, this.sources, {Map<int, SSA>? incoming})
+      : incoming = incoming ?? {};
+
+  /// Reaching value on each incoming predecessor edge.
+  final Map<int, SSA> incoming;
 
   /// The target variable of this phi node.
   final SSA target;
@@ -70,7 +77,13 @@ class PhiNode extends Operation {
 
   @override
   Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
-    return PhiNode(writesTo ?? target, readsFrom ?? sources);
+    final replacements = readsFrom == null
+        ? <SSA, SSA>{}
+        : Map<SSA, SSA>.fromIterables(sources, readsFrom);
+    return PhiNode(writesTo ?? target, readsFrom ?? sources, incoming: {
+      for (final entry in incoming.entries)
+        entry.key: replacements[entry.value] ?? entry.value
+    });
   }
 }
 

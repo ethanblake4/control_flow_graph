@@ -1,7 +1,4 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/operation.dart';
-import 'package:control_flow_graph/src/types.dart';
-import 'package:more/more.dart';
 
 void insertPhiNodesInto(Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
     Map<int, Set<int>> mergeSets) {
@@ -34,78 +31,75 @@ void insertPhiNodesInto(Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
   }
 }
 
-// removal of phi nodes after SSA transformation, optimizations etc
+// Lower phis to parallel edge copies. Critical edges get dedicated blocks so
+// copies cannot overwrite values needed by a different successor.
 void removePhiNodesFrom(
-    CFG graph,
-    Graph<SpecifiedOperation, void> ssaGraph,
-    Map<int, BasicBlock> ids,
-    int root,
-    Operation Function(SSA left, SSA right) assign) {
-  for (var blockId in graph.depthFirst(root)) {
-    final phiNodes = <PhiNode>{};
-    final assignments = <int, Set<Operation>>{};
-    final replacements = <int, Map<Operation, SSA>>{};
-    final block = ids[blockId]!;
-    for (final op in block.code) {
-      if (op is PhiNode) {
-        phiNodes.add(op);
-        for (final predecessor in graph.predecessorsOf(blockId)) {
-          assignments[predecessor] ??= {};
-          replacements[predecessor] ??= {};
-          final preds =
-              ssaGraph.predecessorsOf(SpecifiedOperation(blockId, op));
-          final pred =
-              preds.firstWhere((element) => element.blockId == predecessor);
-          final src = pred.op.writesTo!;
-          if (src != op.target) {
-            final ps = ssaGraph.successorsOf(pred);
-            if (ps.length == 1 && pred.op is! PhiNode) {
-              replacements[predecessor]![pred.op] = op.target;
-            } else {
-              assignments[predecessor]!.add(assign(op.target, src));
-            }
-          }
-        }
-      } else {
-        break;
+    ControlFlowGraph cfg, Operation Function(SSA left, SSA right) assign,
+    {void Function(int predecessor, int oldTarget, int newTarget)?
+        onSplitEdge}) {
+  final graph = cfg.graph;
+  for (final predecessor in graph.vertices.toList()) {
+    final successors = graph.successorsOf(predecessor).toList();
+    if (successors.length < 2) continue;
+    for (final target in successors) {
+      if (graph.predecessorsOf(target).length < 2) continue;
+      final edge = BasicBlock<Operation>([], label: '#phi_${cfg.lastBlockId}');
+      cfg.append(edge, true);
+      final edgeId = edge.id!;
+      final current = graph.successorsOf(predecessor).toList();
+      for (final next in current) {
+        graph.removeEdge(predecessor, next);
       }
+      for (final next in current) {
+        graph.addEdge(predecessor, next == target ? edgeId : next);
+      }
+      graph.addEdge(edgeId, target);
+      for (final phi in cfg[target]!.code.whereType<PhiNode>()) {
+        final value = phi.incoming.remove(predecessor);
+        if (value != null) phi.incoming[edgeId] = value;
+      }
+      onSplitEdge?.call(predecessor, target, edgeId);
     }
-
-    for (final assignment in assignments.entries) {
-      final predecessor = ids[assignment.key]!;
-      final code = predecessor.code;
-      final length = code.length;
-      for (final op in assignment.value) {
-        if (length > 0 &&
-            code[length - 1].writesTo == ControlFlowGraph.branch) {
-          code.insert(length - 1, op);
+  }
+  var temporary = 0;
+  for (final blockId in graph.vertices.toList()) {
+    final block = cfg[blockId]!;
+    final phis = block.code.whereType<PhiNode>().toList();
+    if (phis.isEmpty) continue;
+    for (final predecessor in graph.predecessorsOf(blockId).toList()) {
+      final pending = <SSA, SSA>{};
+      for (final phi in phis) {
+        final source = phi.incoming[predecessor];
+        if (source == null) {
+          throw StateError(
+              'Missing phi input for edge $predecessor -> $blockId');
+        }
+        if (source != phi.target) pending[phi.target] = source;
+      }
+      final copies = <Operation>[];
+      while (pending.isNotEmpty) {
+        final ready = pending.keys
+            .where((target) => !pending.values.contains(target))
+            .firstOrNull;
+        if (ready != null) {
+          copies.add(assign(ready, pending.remove(ready)!));
         } else {
-          code.add(op);
-        }
-      }
-    }
-
-    for (final replacement in replacements.entries) {
-      final predecessor = ids[replacement.key]!;
-      final code = predecessor.code;
-      for (final entry in replacement.value.entries) {
-        final index = code.indexWhere((element) => element == entry.key);
-        final oldTarget = entry.key.writesTo!;
-        final newTarget = entry.value;
-        code[index] = code[index].copyWith(writesTo: newTarget);
-        for (var i = 0; i < code.length; i++) {
-          final op = code[i];
-          if (op is SpillNode && op.target == oldTarget) {
-            code[i] = SpillNode(newTarget);
-          } else if (op is ReloadNode && op.target == oldTarget) {
-            code[i] = ReloadNode(newTarget);
+          final target = pending.keys.first;
+          final saved = SSA('#phi_copy_${temporary++}', type: target.type);
+          copies.add(assign(saved, target));
+          for (final entry in pending.entries.toList()) {
+            if (entry.value == target) pending[entry.key] = saved;
           }
         }
       }
+      final code = cfg[predecessor]!.code;
+      final insertion = code.isNotEmpty &&
+              (code.last.isTerminator ||
+                  code.last.writesTo == ControlFlowGraph.branch)
+          ? code.length - 1
+          : code.length;
+      code.insertAll(insertion, copies);
     }
-
-    for (var i = 0; i < phiNodes.length; i++) {
-      block.code.removeAt(0);
-    }
+    block.code.removeWhere((op) => op is PhiNode);
   }
 }
