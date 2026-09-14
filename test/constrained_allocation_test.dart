@@ -103,8 +103,9 @@ Map<int, List<Instruction>> compile(ControlFlowGraph cfg) {
   ));
 }
 
-num execute(Map<int, List<Instruction>> code, int root) {
-  final regs = <int, num>{}, slots = <(int, int), num>{};
+num execute(Map<int, List<Instruction>> code, int root,
+    {Map<int, num> incoming = const {}}) {
+  final regs = <int, num>{...incoming}, slots = <(int, int), num>{};
   final order = code.keys.toList();
   var block = root;
   for (var step = 0; step < 1000; step++) {
@@ -158,6 +159,18 @@ num run(List<Operation> ops) {
 }
 
 void main() {
+  test('incoming registers survive reversed operands and destructive reuse',
+      () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('a'), 0),
+      RegisterInput(value('b'), 1),
+      Op('sub', value('difference'), [value('b'), value('a')]),
+      Op('add', value('result'), [value('difference'), value('a')]),
+      Op('return', null, [value('result')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    expect(execute(compile(cfg), root.id!, incoming: {0: 3, 1: 10}), 10);
+  });
   test('duplicate input occupies both constrained integer registers', () {
     expect(
         run([

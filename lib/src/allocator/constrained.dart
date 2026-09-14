@@ -124,6 +124,22 @@ class _BlockAllocator {
   }
 
   List<Operation> allocate(List<Operation> code, {bool spillBoundary = true}) {
+    // Install the entire incoming register set before processing any operation.
+    // Seeding one parameter at a time could overwrite a later parameter.
+    var executable = false;
+    for (final op in code) {
+      if (op is RegisterInput) {
+        if (executable ||
+            !registers(op.target).contains(op.register) ||
+            residents.containsKey(op.register)) {
+          throw StateError('Invalid incoming register definition');
+        }
+        residents[op.register] = op.target;
+        stored.remove(op.target);
+      } else {
+        executable = true;
+      }
+    }
     final after = List<Set<SSA>>.generate(code.length, (_) => {});
     var needed = {...liveOut};
     final preferences = <SSA, Set<int>>{};
@@ -148,6 +164,7 @@ class _BlockAllocator {
     }
     for (var i = 0; i < code.length; i++) {
       final op = code[i];
+      if (op is RegisterInput) continue;
       needed = {...after[i], ..._inputs(op)};
       residents.removeWhere((register, value) => !needed.contains(value));
       if (op is SpillNode) {

@@ -31,7 +31,8 @@ void allocateRegisters(
     Map<int, Map<SSA, SplayTreeSet<int>>> nextUseDistances) {
   final constrained = blocks.values.expand((block) => block.code).any((op) {
     final creator = opCreators[op.runtimeType];
-    return (creator?.variantsFor(op)?.isNotEmpty ?? false) ||
+    return op is RegisterInput ||
+        (creator?.variantsFor(op)?.isNotEmpty ?? false) ||
         (creator?.clobberedRegistersFor(op).isNotEmpty ?? false);
   });
   if (constrained) {

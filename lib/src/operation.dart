@@ -41,6 +41,19 @@ abstract class Operation {
   bool get isRematerializable => false;
 }
 
+/// Defines a function parameter already present in a physical register.
+/// These definitions must precede executable operations in the entry block.
+class RegisterInput extends Operation {
+  RegisterInput(this.target, this.register);
+  final SSA target;
+  final int register;
+  @override
+  SSA get writesTo => target;
+  @override
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) =>
+      RegisterInput(writesTo ?? target, register);
+}
+
 /// A phi node operation in a program's [BasicBlock]. Phi nodes are used to
 /// resolve variable assignments in control flow graphs.
 /// Typically you should not create phi nodes directly, but use the
