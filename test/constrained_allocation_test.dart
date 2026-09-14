@@ -35,6 +35,8 @@ class Insn extends Instruction {
   final String kind;
   final List<num> values;
   Insn(this.kind, this.values);
+  @override
+  String toString() => "$kind $values";
 }
 
 Map<int, List<Instruction>> compile(ControlFlowGraph cfg) {
@@ -241,5 +243,27 @@ void main() {
             .where((op) => op.kind == 'spill'),
         isEmpty);
     expect(execute(code, root.id!), 13);
+  });
+  test('linear block boundaries retain registers without spill or reload', () {
+    final root = BasicBlock<Operation>([
+      Op('constant', value('a'), [], 3),
+      Op('constant', value('b'), [], 10)
+    ]);
+    final middle = BasicBlock<Operation>([
+      Op('add', value('sum'), [value('a'), value('b')])
+    ]);
+    final end = BasicBlock<Operation>([
+      Op('return', null, [value('sum')])
+    ]);
+    final cfg =
+        ControlFlowGraph.builder().root(root).then(middle).then(end).build();
+    final code = compile(cfg);
+    expect(execute(code, root.id!), 13);
+    expect(
+        code.values
+            .expand((ops) => ops)
+            .cast<Insn>()
+            .where((op) => op.kind == 'spill' || op.kind == 'reload'),
+        isEmpty);
   });
 }

@@ -29,13 +29,24 @@ void allocateConstrained(CFG graph, int root, Map<int, BasicBlock> blocks,
       }
     }
   } while (changed);
+  final carried = <int, _BlockAllocator>{};
   for (final id in order) {
-    final allocator =
-        _BlockAllocator(types, creators, liveIn[id]!, liveOut[id]!);
-    final code = allocator.allocate(blocks[id]!.code);
+    final predecessor = carried.remove(id);
+    final allocator = _BlockAllocator(
+        types, creators, predecessor?.stored ?? liveIn[id]!, liveOut[id]!);
+    if (predecessor != null) {
+      allocator.residents.addAll(predecessor.residents);
+    }
+    final successors = graph.successorsOf(id).toList();
+    final next = successors.length == 1 ? successors.single : null;
+    final carry = next != null &&
+        graph.predecessorsOf(next).length == 1 &&
+        order.indexOf(next) > order.indexOf(id);
+    final code = allocator.allocate(blocks[id]!.code, spillBoundary: !carry);
     blocks[id]!.code
       ..clear()
       ..addAll(code);
+    if (carry) carried[next] = allocator;
   }
 }
 
@@ -112,7 +123,7 @@ class _BlockAllocator {
     residents[register] = value;
   }
 
-  List<Operation> allocate(List<Operation> code) {
+  List<Operation> allocate(List<Operation> code, {bool spillBoundary = true}) {
     final after = List<Set<SSA>>.generate(code.length, (_) => {});
     var needed = {...liveOut};
     final preferences = <SSA, Set<int>>{};
@@ -204,6 +215,10 @@ class _BlockAllocator {
             if (residents[register] != value) candidateCost++;
           }
           if (!legal) continue;
+          final incumbent = residents[variant.result];
+          if (incumbent != null && after[i].contains(incumbent)) {
+            candidateCost += stored.contains(incumbent) ? 1 : 2;
+          }
           if (preferredOutputs[i]?.contains(variant.result) ?? false) {
             candidateCost--;
           }
@@ -269,8 +284,10 @@ class _BlockAllocator {
     final terminal = result.isNotEmpty && result.last.isTerminator
         ? result.removeLast()
         : null;
-    for (final value in liveOut) {
-      save(value);
+    if (spillBoundary) {
+      for (final value in liveOut) {
+        save(value);
+      }
     }
     if (terminal != null) result.add(terminal);
     return result;
