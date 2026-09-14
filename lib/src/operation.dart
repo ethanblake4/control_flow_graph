@@ -9,6 +9,14 @@ abstract class Operation {
   /// The set of variables that are read from by this operation.
   Set<SSA> get readsFrom => {};
 
+  /// Ordered machine operands, preserving repeated input positions.
+  List<SSA> get operands => readsFrom.toList();
+
+  /// Rebuilds machine operands after allocation. Operations with positional
+  /// duplicates must override this to retain distinct register assignments.
+  Operation copyWithOperands({SSA? writesTo, List<SSA>? operands}) =>
+      copyWith(writesTo: writesTo, readsFrom: operands?.toSet());
+
   /// The basic type of the operation, if it represents one. Used for various
   /// optimizations and transformations.
   OpType get type => const UnknownOp();

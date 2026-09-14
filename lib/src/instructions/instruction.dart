@@ -1,12 +1,14 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/instructions/context.dart';
 
 /// Represents a machine code instruction
 class Instruction {}
 
 abstract class InstructionCreator<T extends Operation, C> {
+  const InstructionCreator();
   Set<Variant>? get variants;
   Set<int> get clobberedRegisters;
+  Set<Variant>? variantsFor(T operation) => variants;
+  Set<int> clobberedRegistersFor(T operation) => clobberedRegisters;
   Instruction createInstruction(T operation, AssembleContext<C> context);
 }
 
@@ -23,7 +25,7 @@ class Variant {
   final List<int> arguments;
 }
 
-class Creator<T extends Operation, C> implements InstructionCreator<T, C> {
+class Creator<T extends Operation, C> extends InstructionCreator<T, C> {
   @override
   final Set<int> clobberedRegisters;
 
@@ -31,9 +33,20 @@ class Creator<T extends Operation, C> implements InstructionCreator<T, C> {
   final Set<Variant> variants;
 
   final Instruction Function(T operation, AssembleContext<C> context) _create;
+  final Set<Variant>? Function(T operation)? selectVariants;
+  final Set<int> Function(T operation)? selectClobbers;
+
+  @override
+  Set<Variant>? variantsFor(T operation) =>
+      selectVariants?.call(operation) ?? variants;
+  @override
+  Set<int> clobberedRegistersFor(T operation) =>
+      selectClobbers?.call(operation) ?? clobberedRegisters;
 
   const Creator({
     this.clobberedRegisters = const {},
+    this.selectVariants,
+    this.selectClobbers,
     required this.variants,
     required Instruction Function(T operation, AssembleContext<C> context)
         create,

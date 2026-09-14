@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'constrained.dart';
 
 import 'package:control_flow_graph/control_flow_graph.dart';
 import 'package:control_flow_graph/src/operation.dart';
@@ -28,6 +29,15 @@ void allocateRegisters(
     Map<int, Set<SSA>> liveIn,
     Map<int, Set<SSA>> liveOut,
     Map<int, Map<SSA, SplayTreeSet<int>>> nextUseDistances) {
+  final constrained = blocks.values.expand((block) => block.code).any((op) {
+    final creator = opCreators[op.runtimeType];
+    return (creator?.variantsFor(op)?.isNotEmpty ?? false) ||
+        (creator?.clobberedRegistersFor(op).isNotEmpty ?? false);
+  });
+  if (constrained) {
+    allocateConstrained(graph, root, blocks, regTypes, opCreators);
+    return;
+  }
   // Process blocks in reverse post-order so every forward edge is visited
   // before its target block.
   final rpo = graph.depthFirstPostOrder(root).toList().reversed.toList();

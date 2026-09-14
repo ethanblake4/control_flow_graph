@@ -64,6 +64,82 @@ class ControlFlowGraph {
       : graph = Graph<int, void>.directed(
             vertexStrategy: StorageStrategy.positiveInteger());
 
+  /// Copies blocks, operands, phi inputs, and SSA metadata without renaming.
+  /// Instruction creators and immutable register type descriptions are shared.
+  ControlFlowGraph clone() {
+    final copy = ControlFlowGraph();
+    for (final entry in _ids.entries) {
+      final block = BasicBlock<Operation>([
+        for (final op in entry.value.code)
+          op.copyWithOperands(
+              writesTo: op.writesTo?.copy(),
+              operands: [for (final input in op.operands) input.copy()]),
+      ], label: entry.value.label)
+        ..id = entry.key;
+      copy.append(block, true);
+    }
+    copy.root = copy._ids[root.id]!;
+    copy.lastBlockId = lastBlockId;
+    for (final from in graph.vertices) {
+      for (final to in graph.successorsOf(from)) {
+        copy.graph.addEdge(from, to);
+      }
+    }
+    copy.labels.addAll(labels);
+    copy.regTypes.addAll(regTypes);
+    copy.opCreators.addAll(opCreators);
+    copy.loops.addAll(loops
+        .map((loop) => Loop(loop.header, {...loop.blocks}, {...loop.exits})));
+    copy._hasPhiNodes = _hasPhiNodes;
+    copy._inSSAForm = _inSSAForm;
+    if (_inSSAForm) copy.refreshSSA();
+    return copy;
+  }
+
+  /// Reindexes an already-SSA graph after an IR-to-IR lowering.
+  /// Definitions must retain unique names and versions. This does not rename
+  /// operands or infer new phi nodes; run full SSA construction for non-SSA IR.
+  void refreshSSA() {
+    if (!inSSAForm) throw StateError('Cannot refresh a graph outside SSA form');
+    invalidate();
+    _nextUseDistances = null;
+    defines = {};
+    uses = {};
+    blockDefines = {};
+    maxVersions = {};
+    _ssaGraph = Graph<SpecifiedOperation, void>.directed();
+    for (final blockId in graph.vertices) {
+      for (final op in _ids[blockId]!.code) {
+        final spec = SpecifiedOperation(blockId, op);
+        final target = op.writesTo;
+        if (target != null && !target.name.startsWith('@')) {
+          if (defines!.containsKey(target)) {
+            throw StateError('Duplicate SSA definition: $target');
+          }
+          defines![target] = spec;
+          blockDefines!.putIfAbsent(blockId, () => {}).add(target);
+          final nextVersion = target.version + 1;
+          if ((maxVersions[target.name] ?? 0) < nextVersion) {
+            maxVersions[target.name] = nextVersion;
+          }
+        }
+        for (final input in op.readsFrom) {
+          uses!.putIfAbsent(input, () => Set.identity()).add(spec);
+        }
+      }
+    }
+    for (final entry in uses!.entries) {
+      final definition = defines![entry.key];
+      if (definition != null) {
+        for (final use in entry.value) {
+          _ssaGraph!.addEdge(definition, use);
+        }
+      }
+    }
+    _hasPhiNodes = _hasPhiNodes ||
+        graph.vertices.any((id) => _ids[id]!.code.any((op) => op is PhiNode));
+  }
+
   /// Create a new declarative control flow graph builder.
   static ControlFlowGraphBuilder builder() => ControlFlowGraphBuilder();
 
