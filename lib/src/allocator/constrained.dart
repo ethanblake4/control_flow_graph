@@ -138,6 +138,103 @@ class _BlockAllocator {
     residents[register] = value;
   }
 
+  bool canSwap(int first, int second) {
+    final a = residents[first], b = residents[second];
+    if (a == null || b == null) return false;
+    return types[a.type]!.regGroups.any((group) =>
+        group.registers.contains(first) &&
+        group.registers.contains(second) &&
+        types[b.type]!.regGroups.contains(group));
+  }
+
+  /// Place operands simultaneously. Acyclic copies run before resident cycles,
+  /// so no move destroys the sole source of another pending operand.
+  void place(Map<int, SSA> demanded, Set<SSA> needed) {
+    final pending = {...demanded}
+      ..removeWhere((register, value) => residents[register] == value);
+    while (pending.isNotEmpty) {
+      int? target;
+      for (final register in pending.keys) {
+        final old = residents[register];
+        if (old == null ||
+            !pending.containsValue(old) ||
+            residents.entries
+                .any((entry) => entry.key != register && entry.value == old)) {
+          target = register;
+          break;
+        }
+      }
+      if (target != null) {
+        load(pending.remove(target)!, target, needed);
+        continue;
+      }
+      // Every pending destination now holds a sole source needed elsewhere.
+      // Exchanging two members shortens a resident permutation cycle without
+      // creating a spill slot. Never disturb an already satisfied destination.
+      for (final entry in pending.entries) {
+        final source = location(entry.value);
+        if (source == null ||
+            !pending.containsKey(source) ||
+            !canSwap(entry.key, source)) {
+          continue;
+        }
+        final old = residents[entry.key]!;
+        result.add(SwapOp(AllocatedSSA.fromSSA(entry.value, source),
+            AllocatedSSA.fromSSA(old, entry.key)));
+        residents[entry.key] = entry.value;
+        residents[source] = old;
+        target = entry.key;
+        break;
+      }
+      if (target == null) {
+        // Overlapping register types need not provide a common swap group.
+        // The canonical spill path safely breaks such a cycle as before.
+        target = pending.keys.first;
+        load(pending[target]!, target, needed);
+      }
+      pending.removeWhere((register, value) => residents[register] == value);
+    }
+  }
+
+  Map<SSA, int> unconstrainedInputs(List<SSA> inputs) {
+    final choices = <SSA, List<int>>{};
+    for (final value in inputs.where((value) => !_immediate(value))) {
+      final available = registers(value);
+      choices[value] = [
+        for (final register in available)
+          if (residents[register] == value) register,
+        for (final register in available)
+          if (!residents.containsKey(register)) register,
+        for (final register in available)
+          if (residents.containsKey(register) && residents[register] != value)
+            register,
+      ];
+    }
+    final assigned = <SSA, int>{};
+    final occupied = <int, SSA>{};
+    bool assign(SSA value, Set<int> visited) {
+      for (final register in choices[value]!) {
+        if (!visited.add(register)) continue;
+        final other = occupied[register];
+        if (other == null || assign(other, visited)) {
+          occupied[register] = value;
+          assigned[value] = register;
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Overlapping types can require moving an earlier, less constrained
+    // operand out of a scarce register. Duplicate operands share one placement.
+    for (final value in choices.keys) {
+      if (!assign(value, {})) {
+        throw StateError('Too many simultaneous operands for register bank');
+      }
+    }
+    return assigned;
+  }
+
   List<Operation> allocate(List<Operation> code,
       {required Set<SSA> boundaryValues}) {
     // Install the entire incoming register set before processing any operation.
@@ -245,9 +342,24 @@ class _BlockAllocator {
               break;
             }
             demanded[register] = value;
-            if (residents[register] != value) candidateCost++;
           }
           if (!legal) continue;
+          for (final entry in demanded.entries) {
+            if (residents[entry.key] == entry.value) continue;
+            candidateCost++;
+            // A reciprocal resident pair needs one swap rather than two
+            // placements. Keep scoring local; longer cycles are resolved only
+            // once, after selecting the variant, rather than simulating each.
+            final source = location(entry.value);
+            if (source != null &&
+                source > entry.key &&
+                demanded[source] == residents[entry.key] &&
+                canSwap(entry.key, source)) {
+              candidateCost--;
+            }
+          }
+          // Loading an operand can evict this value before the instruction
+          // writes its result. Do not hide that cost behind the demanded input.
           final incumbent = residents[variant.result];
           if (incumbent != null && after[i].contains(incumbent)) {
             candidateCost += stored.contains(incumbent) ? 1 : 2;
@@ -266,28 +378,18 @@ class _BlockAllocator {
       }
       final allocated = <SSA>[];
       final reserved = <int, SSA>{};
+      final fallback = chosen == null ? unconstrainedInputs(inputs) : null;
       for (var arg = 0; arg < inputs.length; arg++) {
         final value = inputs[arg];
         if (_immediate(value)) {
           allocated.add(value);
           continue;
         }
-        final available = registers(value);
-        final register = chosen?.arguments[arg] ??
-            available.firstWhere(
-                (r) =>
-                    residents[r] == value &&
-                    (!reserved.containsKey(r) || reserved[r] == value),
-                orElse: () => available.firstWhere(
-                    (r) => !reserved.containsKey(r),
-                    orElse: () => throw StateError(
-                        'Too many simultaneous operands for register bank')));
-        // Before an earlier argument overwrites a later argument, eviction
-        // saves its value. Ordered operands may load one SSA into two registers.
-        load(value, register, needed);
+        final register = chosen?.arguments[arg] ?? fallback![value]!;
         reserved[register] = value;
         allocated.add(AllocatedSSA.fromSSA(value, register));
       }
+      place(reserved, needed);
       final output = op.writesTo;
       int? outputRegister;
       if (output != null && !_immediate(output)) {

@@ -1,4 +1,5 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
+import 'package:control_flow_graph/src/operation.dart' show SpillNode;
 import 'package:test/test.dart';
 
 SSA value(String name, [int type = 0]) => SSA(name, type: type);
@@ -39,24 +40,61 @@ class Insn extends Instruction {
   String toString() => "$kind $values";
 }
 
-Map<int, List<Instruction>> compile(ControlFlowGraph cfg) {
+Map<int, List<Instruction>> compile(
+  ControlFlowGraph cfg, {
+  void Function(ControlFlowGraph cfg)? afterSpilling,
+}) {
   final ints = RegisterGroup({0, 1}), doubles = RegisterGroup({8, 9});
+  final objects = RegisterGroup({16, 17, 18});
+  final overlappingLeft = RegisterGroup({20, 21});
+  final overlappingRight = RegisterGroup({20, 21});
+  final wide = RegisterGroup({24, 25});
+  final narrow = RegisterGroup({24});
   cfg.registerRegType(0, RegType(0, 'integer', {ints}));
   cfg.registerRegType(1, RegType(1, 'double', {doubles}));
+  cfg.registerRegType(2, RegType(2, 'object', {objects}));
+  cfg.registerRegType(3, RegType(3, 'overlapping-left', {overlappingLeft}));
+  cfg.registerRegType(4, RegType(4, 'overlapping-right', {overlappingRight}));
+  cfg.registerRegType(5, RegType(5, 'wide', {wide}));
+  cfg.registerRegType(6, RegType(6, 'narrow', {narrow}));
   cfg.opCreators[Op] = Creator<Op, void>(
       variants: {},
       selectVariants: (op) {
-        final base =
-            (op.args.isEmpty ? op.output?.type : op.args.first.type) == 1
-                ? 8
-                : 0;
+        final type = op.args.isEmpty ? op.output?.type : op.args.first.type;
+        final base = switch (type) {
+          1 => 8,
+          2 => 16,
+          3 || 4 => 20,
+          5 || 6 => 24,
+          _ => 0,
+        };
         return switch (op.kind) {
-          'constant' => {Variant(result: base), Variant(result: base + 1)},
+          'constant' => {
+              Variant(result: base),
+              if (type != 6) Variant(result: base + 1),
+              if (type == 2) Variant(result: base + 2),
+            },
           'add' || 'sub' || 'less' => {
               Variant(
                   result: op.output?.type == 1 ? 8 : 0,
                   arguments: [base, base + 1])
             },
+          'pack2' => {
+              Variant(result: base, arguments: [base, base + 1])
+            },
+          'observe2' => {
+              Variant(result: null, arguments: [base, base + 1])
+            },
+          'pack3' => {
+              Variant(result: base, arguments: [base, base + 1, base + 2])
+            },
+          'mixed' => {
+              Variant(result: 0, arguments: [0, 1, 8, 9])
+            },
+          'heterogeneous' => {
+              Variant(result: 20, arguments: [20, 21])
+            },
+          'fallback' => {},
           'return' || 'branch' => {
               Variant(result: null, arguments: [base])
             },
@@ -67,11 +105,21 @@ Map<int, List<Instruction>> compile(ControlFlowGraph cfg) {
           _ => throw StateError('unknown ${op.kind}'),
         };
       },
-      selectClobbers: (op) => op.kind == 'call' ? {0, 1, 8, 9} : {},
+      selectClobbers: (op) =>
+          op.kind == 'call' ? {0, 1, 8, 9, 16, 17, 18, 20, 21} : {},
       create: (op, context) {
         for (final arg in op.args) {
           expect(
-              arg.alloc.register, arg.type == 0 ? isIn([0, 1]) : isIn([8, 9]));
+              arg.alloc.register,
+              switch (arg.type) {
+                0 => isIn([0, 1]),
+                1 => isIn([8, 9]),
+                2 => isIn([16, 17, 18]),
+                3 || 4 => isIn([20, 21]),
+                5 => isIn([24, 25]),
+                6 => equals(24),
+                _ => fail('Unknown register type ${arg.type}'),
+              });
         }
         return Insn(op.kind, [
           if (op.output != null && op.output != ControlFlowGraph.branch)
@@ -84,7 +132,16 @@ Map<int, List<Instruction>> compile(ControlFlowGraph cfg) {
   cfg.insertPhiNodes();
   cfg.computeSemiPrunedSSA();
   cfg.removeUnusedDefines();
-  cfg.spillReloadVariables({ints: 2, doubles: 2});
+  cfg.spillReloadVariables({
+    ints: 2,
+    doubles: 2,
+    objects: 3,
+    overlappingLeft: 2,
+    overlappingRight: 2,
+    wide: 2,
+    narrow: 1,
+  });
+  afterSpilling?.call(cfg);
   cfg.removePhiNodes(Assign.new);
   cfg.performRegisterAllocation();
   return cfg.assembleToInstructions(AssemblerConfig<void>(
@@ -120,6 +177,17 @@ num execute(Map<int, List<Instruction>> code, int root,
           regs[r(0)] = regs[r(1)]! + regs[r(2)]!;
         case 'sub':
           regs[r(0)] = regs[r(1)]! - regs[r(2)]!;
+        case 'pack2' || 'heterogeneous' || 'fallback':
+          regs[r(0)] = regs[r(1)]! * 10 + regs[r(2)]!;
+        case 'pack3':
+          regs[r(0)] = regs[r(1)]! * 100 + regs[r(2)]! * 10 + regs[r(3)]!;
+        case 'mixed':
+          regs[r(0)] = regs[r(1)]! * 1000 +
+              regs[r(2)]! * 100 +
+              regs[r(3)]! * 10 +
+              regs[r(4)]!;
+        case 'observe2':
+          break;
         case 'less':
           regs[r(0)] = regs[r(1)]! < regs[r(2)]! ? 1 : 0;
         case 'move':
@@ -133,7 +201,7 @@ num execute(Map<int, List<Instruction>> code, int root,
         case 'reload':
           regs[r(0)] = slots[(r(1), r(2))]!;
         case 'call':
-          for (final register in [0, 1, 8, 9]) {
+          for (final register in [0, 1, 8, 9, 16, 17, 18, 20, 21]) {
             regs[register] = -999;
           }
           regs[r(0)] = 7;
@@ -158,7 +226,240 @@ num run(List<Operation> ops) {
   return execute(compile(cfg), root.id!);
 }
 
+List<Insn> emitted(Map<int, List<Instruction>> program) => [
+      for (final block in program.values) ...block.cast<Insn>(),
+    ];
+
 void main() {
+  test('two-register operand cycle emits one swap', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('left'), 0),
+      RegisterInput(value('right'), 1),
+      Op('pack2', value('packed'), [value('right'), value('left')]),
+      Op('return', null, [value('packed')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final shuffles = emitted(program)
+        .where((instruction) =>
+            {'swap', 'move', 'spill', 'reload'}.contains(instruction.kind))
+        .toList();
+    expect(shuffles.map((instruction) => instruction.kind), ['swap']);
+    expect(execute(program, root.id!, incoming: {0: 3, 1: 7}), 73);
+  });
+
+  test('three-register object cycle uses two swaps', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('first', 2), 16),
+      RegisterInput(value('second', 2), 17),
+      RegisterInput(value('third', 2), 18),
+      Op('pack3', value('packed', 2), [
+        value('second', 2),
+        value('third', 2),
+        value('first', 2),
+      ]),
+      Op('return', null, [value('packed', 2)]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final shuffles = emitted(program)
+        .where((instruction) =>
+            {'swap', 'move', 'spill', 'reload'}.contains(instruction.kind))
+        .toList();
+    expect(shuffles.map((instruction) => instruction.kind), ['swap', 'swap']);
+    expect(
+      execute(program, root.id!, incoming: {16: 1, 17: 2, 18: 3}),
+      231,
+    );
+  });
+
+  test('duplicate operands use a safe copy rather than a swap', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('source'), 0),
+      Op('pack2', value('packed'), [value('source'), value('source')]),
+      Op('return', null, [value('packed')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final shuffles = emitted(program)
+        .where((instruction) =>
+            {'swap', 'move', 'spill', 'reload'}.contains(instruction.kind))
+        .toList();
+    expect(shuffles.map((instruction) => instruction.kind), ['move']);
+    expect(execute(program, root.id!, incoming: {0: 6}), 66);
+  });
+
+  test('duplicate resident aliases allow a later operand placement', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('left'), 0),
+      RegisterInput(value('right'), 1),
+      Op('observe2', null, [value('left'), value('left')]),
+      Op('pack2', value('packed'), [value('right'), value('left')]),
+      Op('return', null, [value('packed')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final instructions = emitted(program);
+    expect(
+      instructions.where((instruction) => instruction.kind == 'swap'),
+      isEmpty,
+    );
+    expect(
+      instructions.where((instruction) => instruction.kind == 'move'),
+      isNotEmpty,
+    );
+    expect(
+      instructions.where((instruction) => instruction.kind == 'reload'),
+      isNotEmpty,
+    );
+    expect(execute(program, root.id!, incoming: {0: 3, 1: 7}), 73);
+  });
+
+  test('integer and double cycles swap within their own banks', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('a'), 0),
+      RegisterInput(value('b'), 1),
+      RegisterInput(value('f', 1), 8),
+      RegisterInput(value('g', 1), 9),
+      Op('mixed', value('packed'), [
+        value('b'),
+        value('a'),
+        value('g', 1),
+        value('f', 1),
+      ]),
+      Op('return', null, [value('packed')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final swaps = emitted(program)
+        .where((instruction) => instruction.kind == 'swap')
+        .toList();
+    expect(swaps, hasLength(2));
+    final swappedPairs = swaps.map((instruction) {
+      final registers =
+          instruction.values.map((value) => value.toInt()).toList()..sort();
+      return registers.join(',');
+    }).toSet();
+    expect(swappedPairs, {'0,1', '8,9'});
+    expect(
+      execute(program, root.id!, incoming: {0: 2, 1: 3, 8: 4, 9: 5}),
+      3254,
+    );
+  });
+
+  test('swapped values remain valid across a complete clobber', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('left'), 0),
+      RegisterInput(value('right'), 1),
+      Op('pack2', value('packed'), [value('right'), value('left')]),
+      Op('call', value('called')),
+      Op('add', value('result'), [value('packed'), value('called')]),
+      Op('return', null, [value('result')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final instructions = emitted(program);
+    expect(
+      instructions.where((instruction) => instruction.kind == 'swap'),
+      hasLength(1),
+    );
+    expect(
+      instructions.where((instruction) => instruction.kind == 'spill'),
+      isNotEmpty,
+    );
+    expect(
+      instructions.where((instruction) => instruction.kind == 'reload'),
+      isNotEmpty,
+    );
+    expect(execute(program, root.id!, incoming: {0: 3, 1: 7}), 80);
+  });
+
+  test('stored spill remains reloadable after a swap', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('left'), 0),
+      RegisterInput(value('right'), 1),
+      Op('pack2', value('packed'), [value('right'), value('left')]),
+      Op('call', value('called')),
+      Op('add', value('sum'), [value('left'), value('called')]),
+      Op('add', value('result'), [value('sum'), value('packed')]),
+      Op('return', null, [value('result')]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg, afterSpilling: (cfg) {
+      final code = cfg.root.code;
+      final packIndex = code.indexWhere(
+        (operation) => operation is Op && operation.kind == 'pack2',
+      );
+      final pack = code[packIndex] as Op;
+      code.insert(packIndex, SpillNode(pack.args[1]));
+    });
+    final instructions = emitted(program);
+    expect(
+      instructions.where((instruction) => instruction.kind == 'swap'),
+      hasLength(1),
+    );
+    expect(
+      instructions.where((instruction) => instruction.kind == 'reload'),
+      isNotEmpty,
+    );
+    expect(execute(program, root.id!, incoming: {0: 3, 1: 7}), 83);
+  });
+
+  test('overlapping register sets without a shared group do not swap', () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('left', 3), 20),
+      RegisterInput(value('right', 4), 21),
+      Op('heterogeneous', value('packed', 3), [
+        value('right', 4),
+        value('left', 3),
+      ]),
+      Op('return', null, [value('packed', 3)]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final instructions = emitted(program);
+    expect(
+      instructions.where((instruction) => instruction.kind == 'swap'),
+      isEmpty,
+    );
+    expect(
+      instructions.where((instruction) =>
+          instruction.kind == 'spill' || instruction.kind == 'reload'),
+      isNotEmpty,
+    );
+    expect(execute(program, root.id!, incoming: {20: 4, 21: 9}), 94);
+  });
+
+  test('fallback assignment reserves a narrow register before a wide operand',
+      () {
+    final root = BasicBlock<Operation>([
+      RegisterInput(value('wide', 5), 24),
+      Op('constant', value('narrow', 6), const [], 9),
+      Op('fallback', value('packed', 5), [
+        value('wide', 5),
+        value('narrow', 6),
+      ]),
+      Op('return', null, [value('packed', 5)]),
+    ]);
+    final cfg = ControlFlowGraph.builder().root(root).build();
+    final program = compile(cfg);
+    final instructions = emitted(program);
+    final fallback = instructions.singleWhere(
+      (instruction) => instruction.kind == 'fallback',
+    );
+    expect(fallback.values.skip(1), [25, 24]);
+    expect(
+      instructions.where((instruction) => instruction.kind == 'swap'),
+      isEmpty,
+    );
+    expect(
+      instructions.where((instruction) =>
+          instruction.kind == 'spill' || instruction.kind == 'reload'),
+      isNotEmpty,
+    );
+    expect(execute(program, root.id!, incoming: {24: 4}), 49);
+  });
+
   test('incoming registers survive reversed operands and destructive reuse',
       () {
     final root = BasicBlock<Operation>([
