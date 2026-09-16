@@ -8,6 +8,7 @@ import 'package:control_flow_graph/src/types.dart';
 void allocateConstrained(CFG graph, int root, Map<int, BasicBlock> blocks,
     Map<int, RegType> types, Map<Type, InstructionCreator> creators) {
   final order = graph.depthFirstPostOrder(root).toList().reversed.toList();
+  final positions = {for (var i = 0; i < order.length; i++) order[i]: i};
   final liveIn = <int, Set<SSA>>{for (final id in order) id: {}};
   final liveOut = <int, Set<SSA>>{for (final id in order) id: {}};
   bool changed;
@@ -38,15 +39,29 @@ void allocateConstrained(CFG graph, int root, Map<int, BasicBlock> blocks,
       allocator.residents.addAll(predecessor.residents);
     }
     final successors = graph.successorsOf(id).toList();
-    final next = successors.length == 1 ? successors.single : null;
-    final carry = next != null &&
-        graph.predecessorsOf(next).length == 1 &&
-        order.indexOf(next) > order.indexOf(id);
-    final code = allocator.allocate(blocks[id]!.code, spillBoundary: !carry);
+    final normalEdges = successors.length == 1 ||
+        (blocks[id]!.code.lastOrNull?.isConditionalBranch ?? false);
+    final carry = {
+      if (normalEdges)
+        for (final next in successors)
+          if (graph.predecessorsOf(next).length == 1 &&
+              positions[next]! > positions[id]!)
+            next,
+    };
+    final boundaryValues = <SSA>{
+      for (final next in successors)
+        if (!carry.contains(next)) ...liveIn[next]!,
+    };
+    final code =
+        allocator.allocate(blocks[id]!.code, boundaryValues: boundaryValues);
     blocks[id]!.code
       ..clear()
       ..addAll(code);
-    if (carry) carried[next] = allocator;
+    // Each child allocator copies these collections before changing them.
+    // Both branch alternatives therefore see the same predecessor state.
+    for (final next in carry) {
+      carried[next] = allocator;
+    }
   }
 }
 
@@ -123,7 +138,8 @@ class _BlockAllocator {
     residents[register] = value;
   }
 
-  List<Operation> allocate(List<Operation> code, {bool spillBoundary = true}) {
+  List<Operation> allocate(List<Operation> code,
+      {required Set<SSA> boundaryValues}) {
     // Install the entire incoming register set before processing any operation.
     // Seeding one parameter at a time could overwrite a later parameter.
     var executable = false;
@@ -301,10 +317,8 @@ class _BlockAllocator {
     final terminal = result.isNotEmpty && result.last.isTerminator
         ? result.removeLast()
         : null;
-    if (spillBoundary) {
-      for (final value in liveOut) {
-        save(value);
-      }
+    for (final value in boundaryValues) {
+      save(value);
     }
     if (terminal != null) result.add(terminal);
     return result;

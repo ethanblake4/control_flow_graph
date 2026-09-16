@@ -36,6 +36,10 @@ abstract class Operation {
   /// Whether this operation transfers control and must end its block.
   bool get isTerminator => false;
 
+  /// Whether all outgoing edges are normal alternatives of this branch.
+  /// Synthetic exception edges do not inherit the current register contents.
+  bool get isConditionalBranch => false;
+
   /// Whether this operation is rematerializable. Rematerializable operations
   /// can be recomputed on-the-fly and do not need to be spilled to memory.
   bool get isRematerializable => false;
