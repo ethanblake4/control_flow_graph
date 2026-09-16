@@ -1,627 +1,298 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
 import 'package:control_flow_graph/src/loop.dart';
-import 'package:control_flow_graph/src/types.dart';
+import 'package:control_flow_graph/src/operation.dart'
+    show PhiNode, ReloadNode, SpillNode;
 import 'package:test/test.dart';
 
 import 'sample_instruction_set.dart';
 import 'sample_ir.dart';
 
 void main() {
-  _forLoopGroup(2);
-  _forLoopGroup(3);
-  _forLoopImmediateGroup();
-}
+  group('for-loop analysis', () {
+    test('finds loop globals, dominators, and merge points', () {
+      final cfg = _buildForLoop();
 
-void _forLoopGroup(int registerLimit) {
-  // -------------------------------------------------------------------------
-  // Expected strings that differ between register limits.
-  // -------------------------------------------------------------------------
-
-  final expectedSpill = registerLimit == 2
-      ? '''
-B0:
-x₀ = imm 0  
-i₀ = imm 0
-→ (B1)
-
-B1:
-i₁ = φ(i₀, i₂)  
-x₁ = φ(x₀, x₂)  
-spill x₁  
-n₁ = imm 11  
-@branch = i₁ >= n₁
-→ (B2, B3)
-
-B2:
-spill n₁  
-reload x₁  
-x₂ = x₁ + i₁  
-spill x₂  
-i₂ = i₁ + @1=1  
-reload x₂
-→ (B1)
-
-B3:
-reload x₁  
-return x₁\n
-'''
-      : '''
-B0:
-x₀ = imm 0  
-i₀ = imm 0
-→ (B1)
-
-B1:
-i₁ = φ(i₀, i₂)  
-x₁ = φ(x₀, x₂)  
-n₁ = imm 11  
-@branch = i₁ >= n₁
-→ (B2, B3)
-
-B2:
-spill n₁  
-x₂ = x₁ + i₁  
-i₂ = i₁ + @1=1
-→ (B1)
-
-B3:
-return x₁\n
-''';
-
-  // "Remove empty and unused blocks" produces the same output as "Spill
-  // registers" for this CFG (no empty blocks are created by spilling).
-  final expectedRemoveEmpty = expectedSpill;
-
-  final expectedPhiRemoval = registerLimit == 2
-      ? '''
-B0:
-x₁ = imm 0  
-i₁ = imm 0
-→ (B1)
-
-B1:
-spill x₁  
-n₁ = imm 11  
-@branch = i₁ >= n₁
-→ (B2, B3)
-
-B2:
-spill n₁  
-reload x₁  
-x₁ = x₁ + i₁  
-spill x₁  
-i₁ = i₁ + @1=1  
-reload x₁
-→ (B1)
-
-B3:
-reload x₁  
-return x₁\n
-'''
-      : '''
-B0:
-x₁ = imm 0  
-i₁ = imm 0
-→ (B1)
-
-B1:
-n₁ = imm 11  
-@branch = i₁ >= n₁
-→ (B2, B3)
-
-B2:
-spill n₁  
-x₁ = x₁ + i₁  
-i₁ = i₁ + @1=1
-→ (B1)
-
-B3:
-return x₁\n
-''';
-
-  // -------------------------------------------------------------------------
-  // Group
-  // -------------------------------------------------------------------------
-
-  group('Standard for loop ($registerLimit registers)', () {
-    var hasSpilled = false;
-    var hasRemovedPhi = false;
-
-    final cfg = ControlFlowGraph.builder()
-        .root(BasicBlock([
-          LoadImmediate(SSA('x', type: 0), 0),
-          LoadImmediate(SSA('i', type: 0), 0),
-        ]))
-        .then(BasicBlock([
-          LoadImmediate(SSA('n', type: 0), 10),
-          LoadImmediate(SSA('n', type: 0), 11),
-          GreaterThanOrEqual(
-              ControlFlowGraph.branch, SSA('i', type: 0), SSA('n', type: 0))
-        ]))
-        .split(
-          BasicBlock([
-            Add(SSA('x', type: 0), SSA('x', type: 0), SSA('i', type: 0)),
-            Add(SSA('i', type: 0), SSA('i', type: 0), ImmediateSSA('@1', 1)),
-          ]),
-          BasicBlock([Return(SSA('x', type: 0))]),
-        )
-        .build();
-
-    cfg.link(cfg[2]!, cfg[1]!);
-    cfg.loops.add(Loop(1, {1, 2}, {(2, 3)}));
-
-    final group0 = RegisterGroup({0, 1, 2});
-    cfg.registerRegType(0, RegType(0, 'gpr', {group0}));
-
-    cfg.opCreators.addAll({
-      LoadImmediate: Imm.creator,
-      LessThan: Ilt.creator,
-      GreaterThanOrEqual: Igteq.creator,
-      Add: Iadd.creator,
-      Return: Ret.creator,
-    });
-
-    test('Find globals', () {
       expect(cfg.globals, {
         'x': {0, 2},
         'i': {0, 2},
       });
-    });
-
-    test('Compute dominators', () {
-      expect(cfg.dominators[0], 0);
-      expect(cfg.dominators[1], 0);
-      expect(cfg.dominators[2], 1);
-      expect(cfg.dominators[3], 1);
-    });
-
-    test('Compute dominator tree', () {
-      final tree = cfg.dominatorTree;
-      expect(tree.predecessorsOf(0), {0});
-      expect(tree.predecessorsOf(1), {0});
-      expect(tree.predecessorsOf(2), {1});
-      expect(tree.predecessorsOf(3), {1});
-    });
-
-    test('Compute DJ-Graph', () {
+      expect(cfg.dominators, {0: 0, 1: 0, 2: 1, 3: 1});
+      expect(cfg.dominatorTree.predecessorsOf(2), {1});
+      expect(cfg.dominatorTree.predecessorsOf(3), {1});
       expect(cfg.djGraph.getEdge(0, 1)!.value, dEdge);
       expect(cfg.djGraph.getEdge(1, 2)!.value, dEdge);
       expect(cfg.djGraph.getEdge(2, 1)!.value, jEdge);
-    });
-
-    test('Compute merge sets', () {
-      expect(cfg.mergeSets[2], {1});
       expect(cfg.mergeSets[1], {1});
+      expect(cfg.mergeSets[2], {1});
     });
 
-    test('Insert phi nodes', () {
-      cfg.insertPhiNodes();
-    });
-
-    test('Convert to semi-pruned SSA', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
+    test('SSA joins both loop-carried values', () {
+      final cfg = _buildForLoop()..insertPhiNodes();
       cfg.computeSemiPrunedSSA();
-      expect(() => {print(cfg)}, prints('''
-B0:
-x₀ = imm 0  
-i₀ = imm 0
-→ (B1)
 
-B1:
-i₁ = φ(i₀, i₂)  
-x₁ = φ(x₀, x₂)  
-n₀ = imm 10  
-n₁ = imm 11  
-@branch = i₁ >= n₁
-→ (B2, B3)
+      final phis = cfg[1]!.code.whereType<PhiNode>().toList();
+      expect(phis.map((phi) => phi.target.name), unorderedEquals(['x', 'i']));
+      for (final phi in phis) {
+        expect(phi.incoming.keys, unorderedEquals([0, 2]));
+        expect(phi.sources.map((source) => source.name), {phi.target.name});
+        expect(phi.sources, hasLength(2));
+      }
 
-B2:
-x₂ = x₁ + i₁  
-i₂ = i₁ + @1=1
-→ (B1)
-
-B3:
-return x₁\n
-'''));
+      final body = cfg[2]!.code;
+      expect(body.whereType<Subtract>(), hasLength(1));
+      expect(body.whereType<Add>(), hasLength(2));
     });
 
-    test('Run copy propagation', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.runCopyPropagation();
+    test('liveness follows the loop-carried accumulator and index', () {
+      final cfg = _ssaForLoop();
+      final body = cfg[2]!;
+      final exit = cfg[3]!;
+      final i = cfg.findSSAVariable(body, 'i');
+      final x = cfg.findSSAVariable(body, 'x');
+
+      expect(cfg.isLiveIn(i, body), isTrue);
+      expect(cfg.isLiveIn(x, body), isTrue);
+      expect(cfg.isLiveOut(i, body), isTrue);
+      expect(cfg.isLiveOut(x, body), isTrue);
+      expect(cfg.isLiveIn(cfg.findSSAVariable(exit, 'i'), exit), isFalse);
+      expect(cfg.isLiveIn(cfg.findSSAVariable(exit, 'x'), exit), isTrue);
+      expect(cfg.allLiveOut[exit.id], isEmpty);
     });
 
-    test('Query livein', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      final block = cfg[2]!;
-      final i = cfg.findSSAVariable(block, 'i');
-      final x = cfg.findSSAVariable(block, 'x');
-      expect(cfg.isLiveIn(i, block), true);
-      expect(cfg.isLiveIn(x, block), true);
-      expect(cfg.isLiveIn(SSA('x', version: 0), block), false);
-
-      final block2 = cfg[3]!;
-      final i2 = cfg.findSSAVariable(block2, 'i');
-      final x2 = cfg.findSSAVariable(block2, 'x');
-      expect(cfg.isLiveIn(i2, block2), false);
-      expect(cfg.isLiveIn(x2, block2), true);
-    });
-
-    test('Query liveout', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      final block = cfg[2]!;
-      final i = cfg.findSSAVariable(block, 'i');
-      final x = cfg.findSSAVariable(block, 'x');
-      expect(cfg.isLiveOut(i, block), true);
-      expect(cfg.isLiveOut(x, block), true);
-
-      final block2 = cfg[3]!;
-      final i2 = cfg.findSSAVariable(block2, 'i');
-      final x2 = cfg.findSSAVariable(block2, 'x');
-      expect(cfg.isLiveOut(i2, block2), false);
-      expect(cfg.isLiveOut(x2, block2), false);
-    });
-
-    test('Remove unused defines', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
+    test('dead-code elimination retains operations not declared pure', () {
+      final cfg = _ssaForLoop();
       cfg.removeUnusedDefines();
-      expect(() => {print(cfg)}, prints('''
-B0:
-x₀ = imm 0  
-i₀ = imm 0
-→ (B1)
 
-B1:
-i₁ = φ(i₀, i₂)  
-x₁ = φ(x₀, x₂)  
-n₁ = imm 11  
-@branch = i₁ >= n₁
-→ (B2, B3)
-
-B2:
-x₂ = x₁ + i₁  
-i₂ = i₁ + @1=1
-→ (B1)
-
-B3:
-return x₁\n
-'''));
+      final bounds = cfg[1]!.code.whereType<LoadImmediate>().toList();
+      expect(bounds.map((op) => op.value), [10, 11]);
+      expect(cfg[2]!.code.whereType<Subtract>(), hasLength(1),
+          reason: 'the subtraction feeds both following additions');
+      expect(cfg.nextUseDistances[2], isNotEmpty);
+      expect(cfg.registerPressure[2]![_registers], greaterThan(2));
     });
+  });
 
-    test('Compute global next use distances', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.removeUnusedDefines();
-      print(cfg.nextUseDistances);
-    });
+  for (final registerLimit in [2, 3]) {
+    group('for-loop pipeline with $registerLimit registers', () {
+      test('inserts only spills required by the pressure limit', () {
+        final cfg = _optimizedForLoop();
+        cfg.spillReloadVariables({_registers: registerLimit});
 
-    test('Compute register pressure', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.removeUnusedDefines();
-      print(cfg.registerPressure);
-    });
-
-    test('Spill registers', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.removeUnusedDefines();
-      cfg.spillReloadVariables({group0: registerLimit});
-      hasSpilled = true;
-      expect(() => {print(cfg)}, prints(expectedSpill));
-    });
-
-    test('Remove empty and unused blocks', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.removeUnusedDefines();
-      if (!hasSpilled) {
-        cfg.spillReloadVariables({group0: registerLimit});
-      }
-      cfg.removeEmptyAndUnusedBlocks();
-      expect(() => {print(cfg)}, prints(expectedRemoveEmpty));
-    });
-
-    test('Remove phi nodes', () {
-      if (!cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.removeUnusedDefines();
-      if (!hasSpilled) {
-        cfg.spillReloadVariables({group0: registerLimit});
-      }
-      cfg.removeEmptyAndUnusedBlocks();
-      cfg.removePhiNodes((l, r) => Assign(l, r));
-      hasRemovedPhi = true;
-      expect(() => print(cfg), prints(expectedPhiRemoval));
-    });
-
-    test('Allocate registers', () {
-      if (!cfg.inSSAForm && !cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
-      cfg.removeUnusedDefines();
-      if (!hasSpilled) {
-        cfg.spillReloadVariables({group0: registerLimit});
-        hasSpilled = true;
-      }
-      cfg.removeEmptyAndUnusedBlocks();
-      if (!hasRemovedPhi) {
-        cfg.removePhiNodes((l, r) => Assign(l, r));
-        hasRemovedPhi = true;
-      }
-      cfg.performRegisterAllocation();
-      print(cfg);
-
-      // Every non-@ writesTo must be AllocatedSSA.
-      // Every non-@branch readsFrom must be AllocatedSSA (regular) or
-      // ImmediateSSA (@N numeric immediates).
-      for (final blockId in cfg.allLiveIn.keys) {
-        for (final op in cfg[blockId]!.code) {
-          final wt = op.writesTo;
-          if (wt != null && !wt.name.startsWith('@')) {
-            expect(wt, isA<AllocatedSSA>(),
-                reason: 'writesTo of "$op" should be AllocatedSSA');
-          }
-          for (final r in op.readsFrom) {
-            if (r.name == '@branch') continue;
-            if (r.name.startsWith('@')) {
-              expect(r, isA<ImmediateSSA>(),
-                  reason:
-                      'immediate operand "$r" of "$op" should be ImmediateSSA');
-            } else {
-              expect(r, isA<AllocatedSSA>(),
-                  reason: 'operand "$r" of "$op" should be AllocatedSSA');
-            }
-          }
+        final operations = _operations(cfg);
+        final spills = operations.whereType<SpillNode>().toList();
+        final reloads = operations.whereType<ReloadNode>().toList();
+        if (registerLimit == 2) {
+          expect(spills, isNotEmpty);
+          expect(reloads, isNotEmpty);
+          expect(spills.map((op) => op.target.name), contains('x'));
+          expect(reloads.map((op) => op.target.name), everyElement('x'));
+        } else {
+          expect(spills, isEmpty);
+          expect(reloads, isEmpty);
         }
-      }
-    });
+      });
 
-    test('Assemble to instructions', () {
-      if (!cfg.inSSAForm && !cfg.hasPhiNodes) {
-        cfg.insertPhiNodes();
-      }
-      if (!cfg.inSSAForm) {
-        cfg.computeSemiPrunedSSA();
-      }
+      test('lowers phis, allocates values, and emits instructions', () {
+        final cfg = _loweredForLoop(registerLimit);
+
+        expect(_operations(cfg).whereType<PhiNode>(), isEmpty);
+        _expectAllocated(cfg);
+
+        final program = _assemble(cfg);
+        expect(program.keys, containsAll([0, 1, 2, 3]));
+        expect(program[0]!.whereType<Imm>(), hasLength(2));
+        expect(program[1]!, anyElement(anyOf(isA<Igteqj>(), isA<IgteqjImm>())));
+        expect(program[2]!, anyElement(isA<Isub>()));
+        expect(program[2]!, anyElement(anyOf(isA<Iadd>(), isA<IaddImm>())));
+        expect(program[2]!.last, isA<Jmp>());
+        expect((program[2]!.last as Jmp).blockIndex, 1);
+        expect(program[3]!, anyElement(isA<Ret>()));
+      });
+    });
+  }
+
+  for (final bound in [0, 1, 2, 11, 25]) {
+    test('immediate-bound loop returns the sum below $bound', () {
+      final cfg = _buildImmediateLoop(bound);
+      cfg.insertPhiNodes();
+      cfg.computeSemiPrunedSSA();
       cfg.removeUnusedDefines();
-      if (!hasSpilled) {
-        cfg.spillReloadVariables({group0: registerLimit});
-        hasSpilled = true;
-      }
+      cfg.spillReloadVariables({_registers: 2});
       cfg.removeEmptyAndUnusedBlocks();
-      if (!hasRemovedPhi) {
-        cfg.removePhiNodes((l, r) => Assign(l, r));
-        hasRemovedPhi = true;
-      }
+      cfg.removePhiNodes(Assign.new);
       cfg.performRegisterAllocation();
 
-      final result = cfg.assembleToInstructions(
-        AssemblerConfig<ContextData>(
-          contextData: ContextData(),
-          onSpill: (v, slot, ctx) => Stloc(v.register, slot),
-          onReload: (v, slot, ctx) => Ldloc(v.register, slot),
-          onMove: (target, source, ctx) => Mov(target.register, source.register),
-          onSwap: (a, b, ctx) => Xchg(a.register, b.register),
-          onJump: (targetBlockId, ctx) => Jmp(targetBlockId),
+      _expectAllocated(cfg);
+      final program = _assemble(cfg);
+      final branch = program[1]!.whereType<IgteqjImm>().single;
+      expect(branch.immediate, bound);
+      expect(branch.blockIndex, 3);
+      expect(_run(program), bound * (bound - 1) ~/ 2);
+    });
+  }
+}
+
+final _registers = RegisterGroup({0, 1, 2});
+
+ControlFlowGraph _buildForLoop() {
+  final cfg = ControlFlowGraph.builder()
+      .root(BasicBlock([
+        LoadImmediate(SSA('x', type: 0), 0),
+        LoadImmediate(SSA('i', type: 0), 0),
+      ]))
+      .then(BasicBlock([
+        LoadImmediate(SSA('n', type: 0), 10),
+        LoadImmediate(SSA('n', type: 0), 11),
+        GreaterThanOrEqual(
+          ControlFlowGraph.branch,
+          SSA('i', type: 0),
+          SSA('n', type: 0),
         ),
-      );
+      ]))
+      .split(
+        BasicBlock([
+          Subtract(SSA('i', type: 0), SSA('i', type: 0), SSA('x', type: 0)),
+          Add(SSA('x', type: 0), SSA('x', type: 0), SSA('i', type: 0)),
+          Add(SSA('i', type: 0), SSA('i', type: 0), ImmediateSSA('@1', 1)),
+        ]),
+        BasicBlock([Return(SSA('x', type: 0))]),
+      )
+      .build();
+  cfg.link(cfg[2]!, cfg[1]!);
+  _configure(cfg);
+  return cfg;
+}
 
-      // All four blocks must be present.
-      expect(result.keys, containsAll([0, 1, 2, 3]));
+ControlFlowGraph _buildImmediateLoop(int bound) {
+  final cfg = ControlFlowGraph.builder()
+      .root(BasicBlock([
+        LoadImmediate(SSA('x', type: 0), 0),
+        LoadImmediate(SSA('i', type: 0), 0),
+      ]))
+      .then(BasicBlock([
+        GreaterThanOrEqual(
+          ControlFlowGraph.branch,
+          SSA('i', type: 0),
+          ImmediateSSA('@limit', bound),
+        ),
+      ]))
+      .split(
+        BasicBlock([
+          Add(SSA('x', type: 0), SSA('x', type: 0), SSA('i', type: 0)),
+          Add(SSA('i', type: 0), SSA('i', type: 0), ImmediateSSA('@one', 1)),
+        ]),
+        BasicBlock([Return(SSA('x', type: 0))]),
+      )
+      .build();
+  cfg.link(cfg[2]!, cfg[1]!);
+  _configure(cfg);
+  return cfg;
+}
 
-      // B0 must load two immediates.
-      expect(result[0]!.whereType<Imm>(), hasLength(2));
-
-      // B1 must contain an Ilt or IltImm for the loop condition.
-      final b1 = result[1]!;
-      expect(
-        b1.any((i) => i is Igteqj || i is IgteqjImm),
-        isTrue,
-        reason: 'B1 should contain a greater-than-or-equal comparison',
-      );
-
-      // B2 must contain an add instruction.
-      final b2 = result[2]!;
-      expect(
-        b2.any((i) => i is Iadd || i is IaddImm),
-        isTrue,
-        reason: 'B2 should contain an add instruction',
-      );
-
-      // B3 must return.
-      expect(result[3]!, anyElement(isA<Ret>()));
-
-      if (registerLimit == 2) {
-        // With only 2 registers, spills and reloads must appear somewhere.
-        final all = result.values.expand((e) => e).toList();
-        expect(all.whereType<Stloc>(), isNotEmpty,
-            reason: 'Expected spill instructions with 2 registers');
-        expect(all.whereType<Ldloc>(), isNotEmpty,
-            reason: 'Expected reload instructions with 2 registers');
-      }
-
-      // Pretty-print the assembled output for diagnostic purposes.
-      for (final entry in result.entries) {
-        print('--- Block ${entry.key} ---');
-        for (final instr in entry.value) {
-          print(instr);
-        }
-      }
-    });
+void _configure(ControlFlowGraph cfg) {
+  cfg.loops.add(Loop(1, {1, 2}, {(2, 3)}));
+  cfg.registerRegType(0, RegType(0, 'gpr', {_registers}));
+  cfg.opCreators.addAll({
+    LoadImmediate: Imm.creator,
+    GreaterThanOrEqual: Igteq.creator,
+    Add: Iadd.creator,
+    Subtract: Isub.creator,
+    Return: Ret.creator,
   });
 }
 
-/// For-loop variant where the loop bound is an immediate value rather than a
-/// variable.  This exercises [IgteqjImm] and exposes a register-allocation
-/// bug: the [Igteq.creator] variants declare [arguments: [0, 1]] for the
-/// branch case even when the right-hand operand is an [ImmediateSSA], causing
-/// the allocator to attempt to assign a physical register to the immediate.
-void _forLoopImmediateGroup() {
-  group('For loop with immediate bound', () {
-    var hasSpilled = false;
-    var hasRemovedPhi = false;
+ControlFlowGraph _ssaForLoop() {
+  final cfg = _buildForLoop()..insertPhiNodes();
+  cfg.computeSemiPrunedSSA();
+  return cfg;
+}
 
-    final cfg = ControlFlowGraph.builder()
-        .root(BasicBlock([
-          LoadImmediate(SSA('x', type: 0), 0),
-          LoadImmediate(SSA('i', type: 0), 0),
-        ]))
-        .then(BasicBlock([
-          GreaterThanOrEqual(ControlFlowGraph.branch, SSA('i', type: 0),
-              ImmediateSSA('@n', 11)),
-        ]))
-        .split(
-          BasicBlock([
-            Add(SSA('x', type: 0), SSA('x', type: 0), SSA('i', type: 0)),
-            Add(SSA('i', type: 0), SSA('i', type: 0), ImmediateSSA('@1', 1)),
-          ]),
-          BasicBlock([Return(SSA('x', type: 0))]),
-        )
-        .build();
+ControlFlowGraph _optimizedForLoop() {
+  final cfg = _ssaForLoop();
+  cfg.removeUnusedDefines();
+  return cfg;
+}
 
-    cfg.link(cfg[2]!, cfg[1]!);
-    cfg.loops.add(Loop(1, {1, 2}, {(2, 3)}));
+ControlFlowGraph _loweredForLoop(int registerLimit) {
+  final cfg = _optimizedForLoop();
+  cfg.spillReloadVariables({_registers: registerLimit});
+  cfg.removeEmptyAndUnusedBlocks();
+  cfg.removePhiNodes(Assign.new);
+  cfg.performRegisterAllocation();
+  return cfg;
+}
 
-    final group0 = RegisterGroup({0, 1, 2});
-    cfg.registerRegType(0, RegType(0, 'gpr', {group0}));
+Iterable<Operation> _operations(ControlFlowGraph cfg) sync* {
+  for (final blockId in cfg.graph.vertices) {
+    yield* cfg[blockId]!.code;
+  }
+}
 
-    cfg.opCreators.addAll({
-      LoadImmediate: Imm.creator,
-      GreaterThanOrEqual: Igteq.creator,
-      Add: Iadd.creator,
-      Return: Ret.creator,
-    });
+void _expectAllocated(ControlFlowGraph cfg) {
+  for (final operation in _operations(cfg)) {
+    final output = operation.writesTo;
+    if (output != null && output != ControlFlowGraph.branch) {
+      expect(output, isA<AllocatedSSA>(),
+          reason: '$operation has no output register');
+    }
+    for (final input in operation.readsFrom) {
+      expect(input, anyOf(isA<AllocatedSSA>(), isA<ImmediateSSA>()),
+          reason: '$operation has an unallocated input');
+    }
+  }
+}
 
-    test('Allocate registers', () {
-      cfg.insertPhiNodes();
-      cfg.computeSemiPrunedSSA();
-      cfg.removeUnusedDefines();
-      cfg.spillReloadVariables({group0: 2});
-      hasSpilled = true;
-      cfg.removeEmptyAndUnusedBlocks();
-      cfg.removePhiNodes((l, r) => Assign(l, r));
-      hasRemovedPhi = true;
-      cfg.performRegisterAllocation();
-      print(cfg);
+Map<int, List<Instruction>> _assemble(ControlFlowGraph cfg) {
+  return cfg.assembleToInstructions(
+    AssemblerConfig<ContextData>(
+      contextData: ContextData(),
+      onSpill: (value, slot, context) => Stloc(value.register, slot),
+      onReload: (value, slot, context) => Ldloc(value.register, slot),
+      onMove: (target, source, context) =>
+          Mov(target.register, source.register),
+      onSwap: (a, b, context) => Xchg(a.register, b.register),
+      onJump: (target, context) => Jmp(target),
+    ),
+  );
+}
 
-      // Every writesTo that isn't a sentinel must be AllocatedSSA.
-      // Every readsFrom that isn't a sentinel or immediate must be AllocatedSSA.
-      for (final blockId in cfg.allLiveIn.keys) {
-        for (final op in cfg[blockId]!.code) {
-          final wt = op.writesTo;
-          if (wt != null && !wt.name.startsWith('@')) {
-            expect(wt, isA<AllocatedSSA>(),
-                reason: 'writesTo of "$op" should be AllocatedSSA');
-          }
-          for (final r in op.readsFrom) {
-            if (r.name == '@branch') continue;
-            if (r.name.startsWith('@')) {
-              expect(r, isA<ImmediateSSA>(),
-                  reason:
-                      'immediate operand "$r" of "$op" should be ImmediateSSA');
-            } else {
-              expect(r, isA<AllocatedSSA>(),
-                  reason: 'operand "$r" of "$op" should be AllocatedSSA');
-            }
-          }
-        }
+int _run(Map<int, List<Instruction>> program) {
+  final registers = List<int>.filled(3, 0);
+  final slots = <int, int>{};
+  final order = program.keys.toList();
+  var block = order.first;
+
+  for (var budget = 0; budget < 1000; budget++) {
+    int? next;
+    for (final instruction in program[block]!) {
+      switch (instruction) {
+        case Imm(:final reg, :final value):
+          registers[reg] = value;
+        case Iadd(:final target, :final left, :final right):
+          registers[target] = registers[left] + registers[right];
+        case IaddImm(:final target, :final left, :final immediate):
+          registers[target] = registers[left] + immediate;
+        case Stloc(:final register, :final slotIndex):
+          slots[slotIndex] = registers[register];
+        case Ldloc(:final register, :final slotIndex):
+          registers[register] = slots[slotIndex]!;
+        case Mov(:final target, :final source):
+          registers[target] = registers[source];
+        case Xchg(:final a, :final b):
+          final old = registers[a];
+          registers[a] = registers[b];
+          registers[b] = old;
+        case IgteqjImm(:final left, :final immediate, :final blockIndex):
+          if (registers[left] >= immediate) next = blockIndex;
+        case Jmp(:final blockIndex):
+          next = blockIndex;
+        case Ret(:final reg):
+          return registers[reg];
+        default:
+          throw StateError('Unsupported test instruction: $instruction');
       }
-    });
-
-    test('Assemble to instructions', () {
-      if (!cfg.inSSAForm && !cfg.hasPhiNodes) cfg.insertPhiNodes();
-      if (!cfg.inSSAForm) cfg.computeSemiPrunedSSA();
-      cfg.removeUnusedDefines();
-      if (!hasSpilled) {
-        cfg.spillReloadVariables({group0: 2});
-        hasSpilled = true;
-      }
-      cfg.removeEmptyAndUnusedBlocks();
-      if (!hasRemovedPhi) {
-        cfg.removePhiNodes((l, r) => Assign(l, r));
-        hasRemovedPhi = true;
-      }
-      cfg.performRegisterAllocation();
-
-      final result = cfg.assembleToInstructions(
-        AssemblerConfig<ContextData>(
-          contextData: ContextData(),
-          onSpill: (v, slot, ctx) => Stloc(v.register, slot),
-          onReload: (v, slot, ctx) => Ldloc(v.register, slot),
-          onMove: (target, source, ctx) => Mov(target.register, source.register),
-          onSwap: (a, b, ctx) => Xchg(a.register, b.register),
-          onJump: (targetBlockId, ctx) => Jmp(targetBlockId),
-        ),
-      );
-
-      // B1 must use the immediate-operand branch variant.
-      final b1 = result[1]!;
-      expect(b1.any((i) => i is IgteqjImm), isTrue,
-          reason: 'B1 should use IgteqjImm since bound is an immediate');
-
-      // B2 must contain an add and an unconditional jump back to B1.
-      final b2 = result[2]!;
-      expect(b2.any((i) => i is Iadd || i is IaddImm), isTrue,
-          reason: 'B2 should contain an add instruction');
-      expect(b2.last, isA<Jmp>(),
-          reason: 'B2 should end with an unconditional jump back to B1');
-      expect((b2.last as Jmp).blockIndex, equals(1),
-          reason: 'B2 jump target should be B1');
-
-      // B3 must return.
-      expect(result[3]!, anyElement(isA<Ret>()));
-
-      for (final entry in result.entries) {
-        print('--- Block ${entry.key} ---');
-        for (final instr in entry.value) {
-          print(instr);
-        }
-      }
-    });
-  });
+    }
+    block = next ?? order[order.indexOf(block) + 1];
+  }
+  throw StateError('Program did not terminate');
 }

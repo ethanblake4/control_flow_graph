@@ -297,6 +297,31 @@ class Ret extends Instruction {
 }
 
 /// Store a register to a typed local slot (spill).
+class Isub extends Instruction {
+  final int target;
+  final int left;
+  final int right;
+
+  Isub(this.target, this.left, this.right);
+
+  /// Single Variant: result in r0, left operand in r0, right operand in r1.
+  /// The asymmetry means register preference for the minuend vs subtrahend
+  /// differs between `a - b` and `b - a`.
+  static final creator = Creator<Subtract, ContextData>(
+    variants: {
+      Variant(result: 0, arguments: [0, 1]),
+    },
+    create: (op, context) => Isub(
+      op.writesTo!.alloc.register,
+      op.readsFrom.elementAt(0).alloc.register,
+      op.readsFrom.elementAt(1).alloc.register,
+    ),
+  );
+
+  @override
+  toString() => 'isub r$target, r$left, r$right';
+}
+
 class Stloc extends Instruction {
   final int register;
   final int slotIndex;

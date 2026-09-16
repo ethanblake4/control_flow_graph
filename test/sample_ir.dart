@@ -131,8 +131,8 @@ final class GreaterThanOrEqual extends Operation {
 
   @override
   Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
-    return GreaterThanOrEqual(writesTo ?? target, readsFrom?.firstOrNull ?? left,
-        readsFrom?.lastOrNull ?? right);
+    return GreaterThanOrEqual(writesTo ?? target,
+        readsFrom?.firstOrNull ?? left, readsFrom?.lastOrNull ?? right);
   }
 }
 
@@ -160,3 +160,36 @@ final class Return extends Operation {
 }
 
 final class INoop implements Instruction {}
+
+final class Subtract extends Operation {
+  final SSA target;
+  final SSA left;
+  final SSA right;
+
+  Subtract(this.target, this.left, this.right);
+
+  @override
+  Set<SSA> get readsFrom => {left, right};
+
+  @override
+  SSA? get writesTo => target;
+
+  @override
+  String toString() => '$target = $left - $right';
+
+  @override
+  bool operator ==(Object other) =>
+      other is Subtract &&
+      target == other.target &&
+      left == other.left &&
+      right == other.right;
+
+  @override
+  int get hashCode => target.hashCode ^ left.hashCode ^ right.hashCode;
+
+  @override
+  Operation copyWith({SSA? writesTo, Set<SSA>? readsFrom}) {
+    return Subtract(writesTo ?? target, readsFrom?.firstOrNull ?? left,
+        readsFrom?.lastOrNull ?? right);
+  }
+}
