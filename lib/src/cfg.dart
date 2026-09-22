@@ -66,7 +66,12 @@ class ControlFlowGraph {
 
   /// Copies blocks, operands, phi inputs, and SSA metadata without renaming.
   /// Instruction creators and immutable register type descriptions are shared.
-  ControlFlowGraph clone() {
+  ///
+  /// When [refresh] is false and this graph is in SSA form, the copy is left
+  /// with empty SSA metadata (no `defines`/`uses`/`blockDefines`/`ssaGraph`)
+  /// — call [refreshSSA] before reading them. Useful when the copy will be
+  /// mutated before its SSA metadata is ever read.
+  ControlFlowGraph clone({bool refresh = true}) {
     final copy = ControlFlowGraph();
     for (final entry in _ids.entries) {
       final block = BasicBlock<Operation>([
@@ -92,7 +97,7 @@ class ControlFlowGraph {
         .map((loop) => Loop(loop.header, {...loop.blocks}, {...loop.exits})));
     copy._hasPhiNodes = _hasPhiNodes;
     copy._inSSAForm = _inSSAForm;
-    if (_inSSAForm) copy.refreshSSA();
+    if (_inSSAForm && refresh) copy.refreshSSA();
     return copy;
   }
 
@@ -402,14 +407,18 @@ class ControlFlowGraph {
   }
 
   /// Convert the control flow graph to semi-pruned SSA form.
-  void computeSemiPrunedSSA() {
+  ///
+  /// [copyOperands] is forwarded to [semiPrunedSSARename]; pass false when
+  /// this graph's operands are already unshared (e.g. a [clone]).
+  void computeSemiPrunedSSA({bool copyOperands = true}) {
     if (!hasPhiNodes) {
       throw StateError('Must insert phi nodes before converting to SSA form');
     }
     if (inSSAForm) {
       throw StateError('Already in SSA form');
     }
-    final ssaData = semiPrunedSSARename(graph, root.id!, _ids, globals);
+    final ssaData = semiPrunedSSARename(graph, root.id!, _ids, globals,
+        copyOperands: copyOperands);
 
     blockDefines = ssaData.blockDefines;
     defines = ssaData.defines;
@@ -554,11 +563,12 @@ class ControlFlowGraph {
         final op = code[index];
         final inputs = op is SpillNode ? {op.target} : op.readsFrom;
         for (final input in inputs) {
+          if (input.name.startsWith('@')) continue;
           if (!writes.contains(input)) reads.add(input);
           uses.putIfAbsent(input, () => SplayTreeSet<int>()).add(index);
         }
         final output = op is ReloadNode ? op.target : op.writesTo;
-        if (output != null && output != ControlFlowGraph.branch) {
+        if (output != null && !output.name.startsWith('@')) {
           writes.add(output);
         }
       }

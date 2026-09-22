@@ -113,18 +113,28 @@ class ImmediateSSA extends SSA {
 }
 
 /// rename variables, also computing def/use information and SSA graph
+///
+/// When [copyOperands] is true (the default) every operation is rewritten with
+/// fresh operand objects before renaming — required when the frontend shares
+/// operand instances between operations, since renaming mutates versions in
+/// place. Pass false when the caller has already deep-copied operands (for
+/// example a graph produced by a `copyWith`-level deep copy) to skip the
+/// extra pass.
 SSAComputationData semiPrunedSSARename(CFG graph, int root,
-    Map<int, BasicBlock> ids, Map<String, Set<int>> globals) {
+    Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
+    {bool copyOperands = true}) {
   // Operands may be shared by frontend operations. Renaming must never mutate
   // another definition through that alias, nor alias a read to its own result.
-  for (final blockId in graph.depthFirstPostOrder(root)) {
-    final code = ids[blockId]!.code;
-    for (var index = 0; index < code.length; index++) {
-      final op = code[index];
-      code[index] = op.copyWith(
-        writesTo: op.writesTo?.copy(),
-        readsFrom: {for (final input in op.readsFrom) input.copy()},
-      );
+  if (copyOperands) {
+    for (final blockId in graph.depthFirstPostOrder(root)) {
+      final code = ids[blockId]!.code;
+      for (var index = 0; index < code.length; index++) {
+        final op = code[index];
+        code[index] = op.copyWith(
+          writesTo: op.writesTo?.copy(),
+          readsFrom: {for (final input in op.readsFrom) input.copy()},
+        );
+      }
     }
   }
   final definitions = globals.keys.toMap(key: (k) => k, value: (_) => 0);

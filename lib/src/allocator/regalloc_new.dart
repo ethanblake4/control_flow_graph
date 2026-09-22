@@ -43,10 +43,10 @@ void allocateRegisters(
   // before its target block.
   final rpo = graph.depthFirstPostOrder(root).toList().reversed.toList();
 
-  // The SSA-based liveIn/liveOut are stale after phi removal and variable
-  // coalescing.  Recompute a fresh global liveness via a simple iterative
-  // backward dataflow on the current (post-phi-removal) operations.
-  final freshLiveIn = _computeFreshLiveIn(graph, root, blocks);
+  // The caller's liveIn/liveOut are computed on the current post-phi-removal
+  // operations (SpillNode/ReloadNode aware, '@'-sentinels excluded) — reuse
+  // them rather than running a second identical dataflow fixpoint.
+  final freshLiveIn = liveIn;
 
   final blockEntryState = <int, _RegState>{};
   final blockExitState = <int, _RegState>{};
@@ -79,71 +79,6 @@ void allocateRegisters(
       _fixEdge(blocks[predId]!, predExit, entryState, live, regTypes);
     }
   }
-}
-
-/// Iterative backward dataflow to compute live-in sets from the current
-/// block operations (post-phi-removal).  SpillNode and ReloadNode are treated
-/// as uses/defs respectively so that spilled variables are properly tracked.
-Map<int, Set<SSA>> _computeFreshLiveIn(
-    CFG graph, int root, Map<int, BasicBlock> blocks) {
-  // Compute upward-exposed uses and locally-defined variables per block.
-  final ueVars = <int, Set<SSA>>{};
-  final varKill = <int, Set<SSA>>{};
-
-  for (final blockId in blocks.keys) {
-    final ue = <SSA>{};
-    final kill = <SSA>{};
-    for (final op in blocks[blockId]!.code) {
-      // SpillNode: its target is a use (must be in a register to spill).
-      if (op is SpillNode) {
-        final t = op.target;
-        if (!t.name.startsWith('@') && !kill.contains(t)) ue.add(t);
-        continue;
-      }
-      // ReloadNode: its target is a definition (produces a register value).
-      if (op is ReloadNode) {
-        final t = op.target;
-        if (!t.name.startsWith('@')) kill.add(t);
-        continue;
-      }
-      for (final r in op.readsFrom) {
-        if (!r.name.startsWith('@') && !kill.contains(r)) ue.add(r);
-      }
-      final wt = op.writesTo;
-      if (wt != null && !wt.name.startsWith('@')) kill.add(wt);
-    }
-    ueVars[blockId] = ue;
-    varKill[blockId] = kill;
-  }
-
-  // Iterative fixed-point: liveIn[b] = ueVars[b] ∪ (liveOut[b] − varKill[b])
-  // where liveOut[b] = ∪ liveIn[s] for all successors s.
-  final liveIn = <int, Set<SSA>>{
-    for (final id in blocks.keys) id: {...ueVars[id]!}
-  };
-
-  var changed = true;
-  while (changed) {
-    changed = false;
-    // Process in post-order so back-edge information propagates quickly.
-    for (final blockId in graph.depthFirstPostOrder(root)) {
-      final liveOut = <SSA>{};
-      for (final succ in graph.successorsOf(blockId)) {
-        liveOut.addAll(liveIn[succ] ?? const {});
-      }
-      final newIn = {
-        ...ueVars[blockId]!,
-        ...liveOut.difference(varKill[blockId]!),
-      };
-      if (!newIn.containsAll(liveIn[blockId]!) ||
-          !liveIn[blockId]!.containsAll(newIn)) {
-        liveIn[blockId] = newIn;
-        changed = true;
-      }
-    }
-  }
-
-  return liveIn;
 }
 
 // ---------------------------------------------------------------------------
