@@ -10,6 +10,36 @@ and machine code generator.
 This is useful for writing compilers, interpreters, and 
 static analysis tools.
 
+## Shared compiler passes
+
+The package owns graph and SSA invariants. A frontend supplies its operations,
+language rules, and target instruction encodings.
+
+- Use `Assign` for value copies and `renameOperands` when adapting ordered
+  operands to `Operation.copyWith`. The latter preserves repeated arguments.
+- Use `graph.clone()` to copy a graph before transforming it. A clone with
+  `refresh: false` has no usable SSA metadata until `refreshSSA()` runs.
+- `validateControlFlowGraph` checks definitions, terminator placement, and
+  edges. Its callbacks describe the frontend's branches and exits; the
+  frontend still validates its exception-handler declarations.
+- `validateSSA` checks unique definitions, dominance, and each phi input's
+  association with its predecessor. Run it before leaving SSA form.
+- `SSAValueConstraints<T>` propagates caller-defined facts through equality
+  constraints. The compiler supplies representation or type rules.
+- `SSADefinitions` takes a snapshot of current definitions and can follow
+  `Assign` chains without depending on cached graph metadata.
+- `graph.removeUnusedDefines()` refreshes SSA metadata and removes unused
+  pure definitions. A `canRemove` callback replaces the default purity policy
+  when a compiler has additional proof that an operation can be discarded.
+
+For machine code, set `AssemblerConfig.emitFallthroughJumps` when passing
+assembled blocks to `layoutBlocks`. This keeps control-flow edges explicit
+until the final layout chooses fallthroughs. `layoutBlocks` forwards jump
+chains and preserves block IDs as labels, including exception destinations.
+`relaxBranches` computes label offsets and widens branches until the layout
+stabilizes. The target supplies instruction lengths and widening rules, then
+uses the returned offsets to encode instructions and patch its own tables.
+
 ## Getting started
 
 To use `control_flow_graph`, you'll first have to create some SSA-based operations.

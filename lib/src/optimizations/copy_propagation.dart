@@ -1,161 +1,79 @@
-import 'dart:collection';
-
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/types.dart';
 
-void ssaBasedCopyPropagation(ControlFlowGraph cfg, int root) {
-  final copyRelations = <SSA, Set<SSA>>{};
-  final ssaGraph = cfg.ssaGraph;
-  final mergeSets = cfg.mergeSets;
-  final cfgWorklist = ListQueue<int>.of([root]);
-  final executableEdges = <int, Set<int>>{};
-  final ssaGraphCandidates = <int, List<(int, Set<int>)>>{};
+/// Replaces uses of copies with their source SSA value. A phi is a copy only
+/// when every incoming value resolves to the same definition.
+void ssaBasedCopyPropagation(ControlFlowGraph cfg) {
+  if (!cfg.inSSAForm) {
+    throw StateError('Copy propagation requires SSA form');
+  }
 
-  while (cfgWorklist.isNotEmpty) {
-    final blockId = cfgWorklist.removeFirst();
-    final block = cfg[blockId]!;
-    final code = block.code;
-    final codelen = code.length;
-    for (var i = 0; i < codelen; i++) {
-      final op = code[i];
-      final spec = SpecifiedOperation(blockId, op);
+  final copies = <SSA, SSA>{};
+  SSA resolve(SSA value) {
+    final seen = <SSA>{};
+    var current = value;
+    while (seen.add(current)) {
+      final next = copies[current];
+      if (next == null) return current;
+      current = next;
+    }
+    return value;
+  }
+
+  bool changed;
+  do {
+    changed = false;
+    for (final blockId in cfg.graph.vertices) {
+      for (final op in cfg[blockId]!.code) {
+        SSA? source;
+        if (op is Assign) {
+          source = resolve(op.source);
+        } else if (op is PhiNode && op.sources.isNotEmpty) {
+          final values =
+              op.incoming.isEmpty ? op.sources : op.incoming.values.toSet();
+          final resolved = values.map(resolve).toSet();
+          if (resolved.length == 1) source = resolved.single;
+        }
+        final target = op.writesTo;
+        if (target == null || source == null || source == target) continue;
+        if (copies[target] != source) {
+          copies[target] = source;
+          changed = true;
+        }
+      }
+    }
+  } while (changed);
+  if (copies.isEmpty) return;
+
+  var rewrittenAny = false;
+  for (final blockId in cfg.graph.vertices) {
+    final code = cfg[blockId]!.code;
+    for (var index = 0; index < code.length; index++) {
+      final op = code[index];
       if (op is PhiNode) {
-        final preds = ssaGraph.predecessorsOf(spec);
-        for (final pred in preds) {
-          final predBlockId = pred.blockId;
-          final ee = executableEdges[predBlockId];
-          if (ee != null && ee.contains(blockId)) {
-            final o = pred.op;
-            final wt =
-                o is ParallelCopy ? o.copies.map((c) => c.$2) : [o.writesTo!];
-            copyRelations.putIfAbsent(op.target, () => {}).addAll(wt);
-          }
-        }
-      } else if (op.writesTo != ControlFlowGraph.branch) {
-        if (op.type == AssignmentOp.assign) {
-          final wt =
-              op is ParallelCopy ? op.copies.map((c) => c.$2) : [op.writesTo!];
-          for (final w in wt) {
-            copyRelations.putIfAbsent(w, () => {}).add(op.readsFrom.first);
-          }
-        }
-      }
-      for (final succ in ssaGraph.successorsOf(spec)) {
-        ssaGraphCandidates
-            .putIfAbsent(succ.blockId, () => [])
-            .add((blockId, {blockId}));
-      }
-    }
-    final execFromThis = executableEdges.putIfAbsent(blockId, () => {});
-    final successors = cfg.graph.successorsOf(blockId);
-
-    var excluded = false;
-
-    if (codelen > 0) {
-      final lastOp = code.last;
-      if (lastOp.writesTo == ControlFlowGraph.branch) {
-        final compEq = lastOp.type == ComparisonOp.equal; // otherwise not-equal
-        final readsFromIt = lastOp.readsFrom.iterator..moveNext();
-        final left = readsFromIt.current;
-        readsFromIt.moveNext();
-        final right = readsFromIt.current;
-        final cr = copyRelations[left];
-        if (cr != null && cr.length == 1 && cr.first == right) {
-          if (successors.length == 2) {
-            final succIt = successors.iterator..moveNext();
-            if (compEq) {
-              final cur = succIt.current;
-              if (execFromThis.add(cur)) {
-                cfgWorklist.add(cur);
-              }
-            } else {
-              succIt.moveNext();
-              final cur = succIt.current;
-              if (execFromThis.add(cur)) {
-                cfgWorklist.add(cur);
-              }
-            }
-            excluded = true;
-          }
-        }
-      } else {
-        final markRemove = <int>[];
-        for (final succ in successors.skip(1)) {
-          markRemove.add(succ);
-        }
-        for (final mr in markRemove) {
-          cfg.graph.removeEdge(blockId, mr);
-        }
-      }
-    }
-    if (!excluded) {
-      for (final succ in successors) {
-        if (execFromThis.add(succ)) {
-          cfgWorklist.add(succ);
-        }
-      }
-    }
-
-    for (final target in execFromThis) {
-      final ssaCandidates = ssaGraphCandidates.remove(target);
-      if (ssaCandidates == null) {
-        continue;
-      }
-      for (final (bid, _) in ssaCandidates) {
-        executableEdges.putIfAbsent(bid, () => {}).add(target);
-      }
-    }
-
-    for (final mergeBlock in mergeSets[blockId] ?? {}) {
-      final ssaCandidates = ssaGraphCandidates[mergeBlock] ?? [];
-      var j = 0;
-      final remove = <int>[];
-      for (final cd in ssaCandidates) {
-        final (_, bset) = cd;
-        if (!bset.contains(blockId)) {
+        final sources = {for (final value in op.sources) resolve(value)};
+        final incoming = {
+          for (final entry in op.incoming.entries)
+            entry.key: resolve(entry.value),
+        };
+        if (sources.length == op.sources.length &&
+            sources.containsAll(op.sources) &&
+            incoming.length == op.incoming.length &&
+            incoming.entries
+                .every((entry) => op.incoming[entry.key] == entry.value)) {
           continue;
         }
-        for (final target in execFromThis) {
-          if ((mergeSets[target] ?? {}).contains(mergeBlock)) {
-            bset.add(target);
-          }
+        code[index] = PhiNode(op.target, sources, incoming: incoming);
+      } else {
+        final operands = op.operands;
+        final rewritten = [for (final value in operands) resolve(value)];
+        if (operands.indexed
+            .every((entry) => rewritten[entry.$1] == entry.$2)) {
+          continue;
         }
-        bset.remove(blockId);
-        if (bset.isEmpty) {
-          remove.add(j);
-        }
-        j++;
+        code[index] = op.copyWithOperands(operands: rewritten);
       }
-      var k = 0;
-      for (final j in remove) {
-        ssaCandidates.removeAt(j - k);
-        k++;
-      }
+      rewrittenAny = true;
     }
   }
-
-  final uses = cfg.uses!;
-  for (final ssa in copyRelations.keys) {
-    final copies = copyRelations[ssa]!;
-    if (copies.isEmpty || copies.length > 1) {
-      continue;
-    }
-    final ssaUses = uses.remove(ssa);
-    if (ssaUses == null) {
-      continue;
-    }
-    final copy = copies.first;
-    for (final use in ssaUses) {
-      final ssaSet = use.op.readsFrom;
-      ssaSet.remove(ssa);
-      ssaSet.add(copies.first);
-      final def = cfg.defines![copy]!;
-      ssaGraph.addEdge(def, use);
-      for (final s in ssaGraph.predecessorsOf(use).toList()) {
-        if (!ssaSet.contains(s.op.writesTo)) {
-          ssaGraph.removeEdge(s, use);
-        }
-      }
-    }
-  }
+  if (rewrittenAny) cfg.refreshSSA();
 }

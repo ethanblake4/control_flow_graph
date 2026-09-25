@@ -75,6 +75,9 @@ final class LessThan extends Operation {
   Set<SSA> get readsFrom => {left, right};
 
   @override
+  List<SSA> get operands => [left, right];
+
+  @override
   SSA? get writesTo => target;
 
   @override
@@ -98,6 +101,10 @@ final class LessThan extends Operation {
     return LessThan(writesTo ?? target, readsFrom?.firstOrNull ?? left,
         readsFrom?.lastOrNull ?? right);
   }
+
+  @override
+  Operation copyWithOperands({SSA? writesTo, List<SSA>? operands}) =>
+      LessThan(writesTo ?? target, operands?[0] ?? left, operands?[1] ?? right);
 }
 
 final class GreaterThanOrEqual extends Operation {

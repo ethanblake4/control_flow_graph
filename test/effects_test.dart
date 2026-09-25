@@ -72,6 +72,21 @@ void main() {
     expect(cfg.defines, hasLength(1));
   });
 
+  test('dead-result cleanup reindexes operations replaced after SSA', () {
+    final oldValue = SSA('old');
+    final replacement = SSA('replacement');
+    final block = BasicBlock<Operation>([PureValue(oldValue)]);
+    final cfg = toSSA(block);
+    block.code[0] = PureValue(replacement);
+
+    cfg.removeUnusedDefines(canRemove: (op) => op is PureValue);
+
+    expect(block.code, isEmpty);
+    expect(cfg.defines, isEmpty);
+    expect(cfg.uses, isEmpty);
+    expect(cfg.ssaGraph.vertices, isEmpty);
+  });
+
   test('control-flow sentinel cannot be removed by a pure annotation', () {
     final block = BasicBlock<Operation>([PureValue(ControlFlowGraph.branch)]);
     final cfg = toSSA(block);

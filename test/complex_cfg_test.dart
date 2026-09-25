@@ -69,17 +69,12 @@ void main() {
       });
     });
 
-    test('SSA records predecessor-specific values at every join', () {
+    test('SSA keeps predecessor-specific values for used joins', () {
       final cfg = _ssaComplexGraph();
 
-      _expectPhi(cfg, 'c2', 'a', predecessors: ['c1', 'c7']);
-      _expectPhi(cfg, 'c2', 'b', predecessors: ['c1', 'c7']);
-      _expectPhi(cfg, 'c8', 'b', predecessors: ['c3', 'c10']);
-      _expectPhi(cfg, 'c5', 'b', predecessors: ['c4', 'c6']);
       _expectPhi(cfg, 'c6', 'b', predecessors: ['c5', 'c9']);
-      _expectPhi(cfg, 'c6', 'i', predecessors: ['c5', 'c9']);
-
-      expect(cfg.defines, contains(_phiTarget(cfg, 'c2', 'a')));
+      expect(_operations(cfg).whereType<PhiNode>(), hasLength(1));
+      expect(cfg.defines, contains(_phiTarget(cfg, 'c6', 'b')));
       expect(cfg.ssaGraph.vertices, isNotEmpty);
     });
 

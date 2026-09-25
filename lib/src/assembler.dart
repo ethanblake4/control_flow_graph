@@ -65,6 +65,7 @@ class AssemblerConfig<C> {
     this.onMove,
     this.onSwap,
     this.onJump,
+    this.emitFallthroughJumps = false,
   });
 
   /// Arbitrary user data made available in every callback via
@@ -94,6 +95,11 @@ class AssemblerConfig<C> {
   /// rejected if an implicit jump is required. Explicit terminators do not
   /// trigger this callback.
   final JumpCallback<C>? onJump;
+
+  /// Emit jumps for single-successor blocks even when the successor follows
+  /// immediately in the assembler order. Use this when a later layout pass
+  /// will choose the final order and remove its own fallthrough jumps.
+  final bool emitFallthroughJumps;
 }
 
 /// Assembles a post-register-allocation [ControlFlowGraph] into concrete
@@ -238,7 +244,7 @@ Map<int, List<Instruction>> assembleBlocksToInstructions<C>(
       final nextBlockId = blockIndex + 1 < blockOrderList.length
           ? blockOrderList[blockIndex + 1]
           : null;
-      if (successorId != nextBlockId) {
+      if (config.emitFallthroughJumps || successorId != nextBlockId) {
         if (onJump == null) throw StateError('Missing onJump callback');
         instructions.add(onJump(successorId, context));
       }

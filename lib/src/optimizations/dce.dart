@@ -1,7 +1,17 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
 import 'package:control_flow_graph/src/types.dart';
 
-void removeUnusedSSADefines(ControlFlowGraph cfg) {
+/// Removes unused SSA definitions until no further result becomes dead.
+///
+/// [canRemove] is an optional policy for the calling compiler. When supplied,
+/// it replaces [Operation.isPure], so callers must certify that every selected
+/// operation can be discarded without observable effects. The graph's SSA
+/// metadata is rebuilt first because lowering passes may have rewritten code.
+void removeUnusedSSADefines(
+  ControlFlowGraph cfg, {
+  bool Function(Operation)? canRemove,
+}) {
+  cfg.refreshSSA();
   // Removing a leaf can make its inputs unused, so continue until stable.
   bool changed;
   do {
@@ -9,7 +19,7 @@ void removeUnusedSSADefines(ControlFlowGraph cfg) {
     for (final define in cfg.defines!.entries.toList()) {
       final value = define.key;
       final spec = define.value;
-      if (!spec.op.isPure ||
+      if (!(canRemove?.call(spec.op) ?? spec.op.isPure) ||
           value == ControlFlowGraph.branch ||
           (cfg.uses![value]?.isNotEmpty ?? false)) {
         continue;

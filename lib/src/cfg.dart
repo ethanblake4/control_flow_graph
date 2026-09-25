@@ -417,8 +417,8 @@ class ControlFlowGraph {
     if (inSSAForm) {
       throw StateError('Already in SSA form');
     }
-    final ssaData = semiPrunedSSARename(graph, root.id!, _ids, globals,
-        copyOperands: copyOperands);
+    final ssaData =
+        semiPrunedSSARename(graph, root.id!, _ids, copyOperands: copyOperands);
 
     blockDefines = ssaData.blockDefines;
     defines = ssaData.defines;
@@ -482,14 +482,17 @@ class ControlFlowGraph {
     if (!inSSAForm) {
       throw StateError('Cannot run copy propagation in non-SSA form');
     }
-    ssaBasedCopyPropagation(this, root.id!);
+    ssaBasedCopyPropagation(this);
   }
 
-  void removeUnusedDefines() {
+  /// Removes unused results, using [Operation.isPure] unless [canRemove]
+  /// supplies a compiler-specific policy for safely discarding operations.
+  /// Rebuilds SSA metadata first to account for preceding IR rewrites.
+  void removeUnusedDefines({bool Function(Operation)? canRemove}) {
     if (!inSSAForm) {
       throw StateError('Cannot remove unused defines in non-SSA form');
     }
-    removeUnusedSSADefines(this);
+    removeUnusedSSADefines(this, canRemove: canRemove);
   }
 
   void removeEmptyAndUnusedBlocks() {

@@ -1,3 +1,12 @@
+## Unreleased
+
+- Own SSA and frontend graph validation, including predecessor-specific phi checks.
+- Add ordered operand renaming, SSA equality constraints, and copy-chain lookup.
+- Allow caller-specific dead-result removal and refresh metadata before DCE.
+- Add block layout with label preservation and target-driven branch relaxation.
+- Rename SSA values through the dominator tree and remove unused phi cycles.
+- Keep copy propagation's instructions and def-use metadata consistent.
+
 ## 1.3.0
 - Added working register allocation algorithm
 - Add machine code generation

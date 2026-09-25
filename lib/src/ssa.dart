@@ -1,6 +1,7 @@
 import 'dart:collection';
 
 import 'package:control_flow_graph/control_flow_graph.dart';
+import 'package:control_flow_graph/src/dominators.dart';
 import 'package:control_flow_graph/src/types.dart';
 import 'package:more/more.dart';
 
@@ -120,8 +121,8 @@ class ImmediateSSA extends SSA {
 /// place. Pass false when the caller has already deep-copied operands (for
 /// example a graph produced by a `copyWith`-level deep copy) to skip the
 /// extra pass.
-SSAComputationData semiPrunedSSARename(CFG graph, int root,
-    Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
+SSAComputationData semiPrunedSSARename(
+    CFG graph, int root, Map<int, BasicBlock> ids,
     {bool copyOperands = true}) {
   // Operands may be shared by frontend operations. Renaming must never mutate
   // another definition through that alias, nor alias a read to its own result.
@@ -137,101 +138,127 @@ SSAComputationData semiPrunedSSARename(CFG graph, int root,
       }
     }
   }
-  final definitions = globals.keys.toMap(key: (k) => k, value: (_) => 0);
-  final visited = <int>{};
-  final worklist = ListQueue<(int, int?, Map<String, int>)>.of([
-    (
-      root,
-      null,
-      {for (final entry in definitions.entries) entry.key: entry.value}
-    )
-  ]);
-
+  final nextVersions = <String, int>{};
   final blockDefines = <int, Set<SSA>>{};
   final defines = <SSA, SpecifiedOperation>{};
   final uses = <SSA, Set<SpecifiedOperation>>{};
   final ssaGraph = Graph<SpecifiedOperation, void>.directed();
-
-  workloop:
-  while (worklist.isNotEmpty) {
-    final (blockId, predecessor, versions) = worklist.removeFirst();
-    final unseen = visited.add(blockId);
-    final block = ids[blockId]!;
-    var remove = <PhiNode>[];
-
-    for (final op in block.code) {
-      final spec = SpecifiedOperation(blockId, op);
-      if (op is PhiNode) {
-        final v = op.sources.first;
-        final d = definitions[v.name]!;
-        final version = versions[v.name]!;
-        if (unseen) {
-          op.sources.clear();
-          if (d == 0) {
-            remove.add(op);
-          } else {
-            definitions[v.name] = d + 1;
-            final target = op.target;
-            target.version = versions[v.name] = d;
-            defines[target] = spec;
-            blockDefines.putIfAbsent(blockId, () => {}).add(target);
-          }
-        }
-        final src = SSA(v.name, type: v.type, version: version);
-        op.sources.add(src);
-        if (predecessor != null) op.incoming[predecessor] = src;
-        uses.putIfAbsent(src, () => Set.identity()).add(spec);
-        final def = defines[src];
-        if (def != null) {
-          ssaGraph.addEdge(def, spec);
-        }
-
-        continue;
-      }
-
-      if (!unseen) {
-        continue workloop;
-      }
-
-      final writesTo = op.writesTo;
-
-      for (final ssa in op.readsFrom) {
-        var v = versions[ssa.name];
-        if (v == null && !ssa.name.startsWith('@')) {
-          definitions[ssa.name] = versions[ssa.name] = v = 0;
-        }
-        if (v != null) {
-          ssa.version = v;
-        }
-        uses.putIfAbsent(ssa, () => Set.identity()).add(spec);
-        final def = defines[ssa];
-        if (def != null) {
-          ssaGraph.addEdge(def, spec);
-        }
-      }
-
-      if (writesTo != null) {
-        var d = definitions[writesTo.name] ?? 0;
-        if (!writesTo.name.startsWith('@')) {
-          definitions[writesTo.name] = d + 1;
-          versions[writesTo.name] = d;
-          writesTo.version = d;
-          defines[writesTo] = spec;
-          blockDefines.putIfAbsent(blockId, () => {}).add(writesTo);
-        }
-      }
+  final dominators = computeDominators(graph, root);
+  final children = <int, List<int>>{};
+  for (final entry in dominators.entries) {
+    if (entry.key != root) {
+      children.putIfAbsent(entry.value, () => []).add(entry.key);
     }
-
-    for (final op in remove) {
-      block.code.remove(op);
-    }
-
-    for (final next in graph.successorsOf(blockId)) {
-      worklist.add((next, blockId, {...versions}));
+    for (final phi in ids[entry.key]!.code.whereType<PhiNode>()) {
+      phi.sources.clear();
+      phi.incoming.clear();
     }
   }
 
-  return SSAComputationData(ssaGraph, blockDefines, defines, uses, definitions);
+  // A block inherits only the versions from its immediate dominator. Filling
+  // successor phis from the predecessor's outgoing state handles back edges
+  // without copying a sibling branch's definitions into the join.
+  final worklist = ListQueue<(int, Map<String, int>)>.of([(root, {})]);
+  while (worklist.isNotEmpty) {
+    final (blockId, incomingVersions) = worklist.removeFirst();
+    final versions = {...incomingVersions};
+    final block = ids[blockId]!;
+    for (final phi in block.code.whereType<PhiNode>()) {
+      final name = phi.target.name;
+      phi.target.version = versions[name] = nextVersions.update(
+        name,
+        (value) => value + 1,
+        ifAbsent: () => 0,
+      );
+    }
+    for (final op in block.code) {
+      if (op is PhiNode) continue;
+      for (final input in op.readsFrom) {
+        final version = versions[input.name];
+        if (version != null) input.version = version;
+      }
+      final target = op.writesTo;
+      if (target != null && !target.name.startsWith('@')) {
+        final name = target.name;
+        target.version = versions[name] = nextVersions.update(
+          name,
+          (value) => value + 1,
+          ifAbsent: () => 0,
+        );
+      }
+    }
+    for (final successor in graph.successorsOf(blockId)) {
+      for (final phi in ids[successor]!.code.whereType<PhiNode>()) {
+        final name = phi.target.name;
+        final source =
+            SSA(name, type: phi.target.type, version: versions[name] ?? -1);
+        phi.incoming[blockId] = source;
+        phi.sources.add(source);
+      }
+    }
+    for (final child in children[blockId] ?? const <int>[]) {
+      worklist.add((child, versions));
+    }
+  }
+
+  // A phi can appear live only because another unused phi reads it. Keep
+  // phis reached from real operations, and remove unreferenced phi cycles.
+  final phis = <SSA, PhiNode>{};
+  for (final blockId in dominators.keys) {
+    for (final phi in ids[blockId]!.code.whereType<PhiNode>()) {
+      phis[phi.target] = phi;
+    }
+  }
+  final livePhis = <PhiNode>{};
+  final pendingPhis = <PhiNode>[];
+  for (final blockId in dominators.keys) {
+    for (final op in ids[blockId]!.code) {
+      if (op is PhiNode) continue;
+      for (final input in op.readsFrom) {
+        final phi = phis[input];
+        if (phi != null) pendingPhis.add(phi);
+      }
+    }
+  }
+  while (pendingPhis.isNotEmpty) {
+    final phi = pendingPhis.removeLast();
+    if (!livePhis.add(phi)) continue;
+    for (final input in phi.sources) {
+      final dependency = phis[input];
+      if (dependency != null) pendingPhis.add(dependency);
+    }
+  }
+  for (final blockId in dominators.keys) {
+    ids[blockId]!.code.removeWhere(
+          (op) => op is PhiNode && !livePhis.contains(op),
+        );
+  }
+
+  for (final blockId in dominators.keys) {
+    for (final op in ids[blockId]!.code) {
+      final spec = SpecifiedOperation(blockId, op);
+      final target = op.writesTo;
+      if (target != null && !target.name.startsWith('@')) {
+        defines[target] = spec;
+        blockDefines.putIfAbsent(blockId, () => {}).add(target);
+      }
+      for (final input in op.readsFrom) {
+        uses.putIfAbsent(input, () => Set.identity()).add(spec);
+      }
+    }
+  }
+  for (final entry in uses.entries) {
+    final definition = defines[entry.key];
+    if (definition != null) {
+      for (final use in entry.value) {
+        ssaGraph.addEdge(definition, use);
+      }
+    }
+  }
+
+  return SSAComputationData(ssaGraph, blockDefines, defines, uses, {
+    for (final entry in nextVersions.entries) entry.key: entry.value + 1,
+  });
 }
 
 /*
