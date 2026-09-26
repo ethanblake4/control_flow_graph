@@ -20,6 +20,24 @@ class BasicBlockBuilder {
 
   BasicBlockBuilder then(BasicBlock block) => merge(block);
 
+  /// Like [then], but skips the link edge from any block already ending in
+  /// a terminator — such a block cannot legally gain a fallthrough
+  /// successor. The returned builder still moves on to [block].
+  /// [isTerminated] overrides the default [Operation.isTerminator] check
+  /// for frontends whose ops don't declare it.
+  BasicBlockBuilder thenUnlessTerminated(BasicBlock block,
+      [bool Function(Operation op)? isTerminated]) {
+    _cfg.linkAll(
+      _blocks.where((b) {
+        final last = b.code.lastOrNull;
+        return last == null ||
+            !(isTerminated?.call(last) ?? last.isTerminator);
+      }),
+      [block],
+    );
+    return BasicBlockBuilder(_cfg, [block], this, _groupStart);
+  }
+
   BasicBlockBuilder split(BasicBlock b1, BasicBlock b2,
       [BasicBlock? b3,
       BasicBlock? b4,
