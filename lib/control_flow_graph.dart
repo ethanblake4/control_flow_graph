@@ -17,6 +17,7 @@ export 'src/operands.dart' show renameOperands;
 export 'src/validation.dart';
 export 'src/instructions/layout.dart';
 export 'src/analysis/ssa_values.dart';
+export 'src/optimizations/common_expressions.dart';
 export 'src/ssa.dart' show SSA, AllocatedSSA, ImmediateSSA;
 export 'src/instructions/context.dart' show AssembleContext;
 export 'src/instructions/instruction.dart';
