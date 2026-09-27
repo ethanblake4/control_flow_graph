@@ -9,8 +9,7 @@ const int dEdge = 0;
 const int jEdge = 1;
 
 Graph<int, int> computeDJGraph(CFG graph, Map<int, int> dominators) {
-  final djGraph = Graph<int, int>.directed(
-      vertexStrategy: StorageStrategy.positiveInteger());
+  final djGraph = Graph<int, int>.directed();
 
   for (final node in dominators.keys) {
     final idom = dominators[node];

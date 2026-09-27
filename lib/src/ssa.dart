@@ -121,9 +121,10 @@ class ImmediateSSA extends SSA {
 /// place. Pass false when the caller has already deep-copied operands (for
 /// example a graph produced by a `copyWith`-level deep copy) to skip the
 /// extra pass.
+/// [dominators] may supply an existing immediate-dominator map for this graph.
 SSAComputationData semiPrunedSSARename(
     CFG graph, int root, Map<int, BasicBlock> ids,
-    {bool copyOperands = true}) {
+    {bool copyOperands = true, Map<int, int>? dominators}) {
   // Operands may be shared by frontend operations. Renaming must never mutate
   // another definition through that alias, nor alias a read to its own result.
   if (copyOperands) {
@@ -142,7 +143,7 @@ SSAComputationData semiPrunedSSARename(
   final blockDefines = <int, Set<SSA>>{};
   final defines = <SSA, SpecifiedOperation>{};
   final uses = <SSA, Set<SpecifiedOperation>>{};
-  final dominators = computeDominators(graph, root);
+  dominators ??= computeDominators(graph, root);
   final children = <int, List<int>>{};
   for (final entry in dominators.entries) {
     if (entry.key != root) {
@@ -159,8 +160,7 @@ SSAComputationData semiPrunedSSARename(
   // without copying a sibling branch's definitions into the join.
   final worklist = ListQueue<(int, Map<String, int>)>.of([(root, {})]);
   while (worklist.isNotEmpty) {
-    final (blockId, incomingVersions) = worklist.removeFirst();
-    final versions = {...incomingVersions};
+    final (blockId, versions) = worklist.removeFirst();
     final block = ids[blockId]!;
     for (final phi in block.code.whereType<PhiNode>()) {
       final name = phi.target.name;
@@ -195,8 +195,13 @@ SSAComputationData semiPrunedSSARename(
         phi.sources.add(source);
       }
     }
-    for (final child in children[blockId] ?? const <int>[]) {
-      worklist.add((child, versions));
+    final dominated = children[blockId] ?? const <int>[];
+    for (var index = 0; index < dominated.length; index++) {
+      // Transfer the state to the last child; only siblings need copies.
+      worklist.add((
+        dominated[index],
+        index == dominated.length - 1 ? versions : {...versions},
+      ));
     }
   }
 

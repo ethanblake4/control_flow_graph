@@ -60,9 +60,9 @@ class ControlFlowGraph {
   bool get inSSAForm => _inSSAForm;
 
   /// Creates a new control flow graph.
-  ControlFlowGraph()
-      : graph = Graph<int, void>.directed(
-            vertexStrategy: StorageStrategy.positiveInteger());
+  // Adjacency maps are sparse, even when block IDs are dense. Integer-indexed
+  // storage would allocate up to the largest neighbor ID for every block.
+  ControlFlowGraph() : graph = Graph<int, void>.directed();
 
   /// Copies blocks, operands, phi inputs, and SSA metadata without renaming.
   /// Instruction creators and immutable register type descriptions are shared.
@@ -398,7 +398,10 @@ class ControlFlowGraph {
     if (inSSAForm) {
       throw StateError('Cannot insert phi nodes into SSA form');
     }
-    insertPhiNodesInto(_ids, globals, mergeSets);
+    final globalVariables = globals;
+    if (globalVariables.isNotEmpty) {
+      insertPhiNodesInto(_ids, globalVariables, mergeSets);
+    }
     _hasPhiNodes = true;
   }
 
@@ -413,8 +416,8 @@ class ControlFlowGraph {
     if (inSSAForm) {
       throw StateError('Already in SSA form');
     }
-    final ssaData =
-        semiPrunedSSARename(graph, root.id!, _ids, copyOperands: copyOperands);
+    final ssaData = semiPrunedSSARename(graph, root.id!, _ids,
+        copyOperands: copyOperands, dominators: dominators);
 
     blockDefines = ssaData.blockDefines;
     defines = ssaData.defines;

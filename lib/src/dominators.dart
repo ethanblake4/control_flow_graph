@@ -55,8 +55,7 @@ Map<int, int> computeDominators(CFG graph, int root) {
 Graph<int, void> createDominatorTree(
   Map<int, int?> dominators,
 ) {
-  final tree = Graph<int, void>.directed(
-      vertexStrategy: StorageStrategy.positiveInteger());
+  final tree = Graph<int, void>.directed();
   for (final node in dominators.keys) {
     final idom = dominators[node];
     if (idom != null) {
