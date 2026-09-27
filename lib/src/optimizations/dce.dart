@@ -1,5 +1,4 @@
 import 'package:control_flow_graph/control_flow_graph.dart';
-import 'package:control_flow_graph/src/types.dart';
 
 /// Removes unused SSA definitions until no further result becomes dead.
 ///
@@ -59,18 +58,6 @@ void trimBlocks(ControlFlowGraph cfg) {
         successors.single != blockId &&
         !hasBranchingPredecessor) {
       markRemove.add(blockId);
-
-      for (final op in block.code) {
-        final readsFrom = op.readsFrom;
-        for (final ssa in readsFrom) {
-          final spec = SpecifiedOperation(blockId, op);
-          final defSpec = cfg.defines![ssa];
-          if (defSpec != null) {
-            cfg.invalidateSSAEdges();
-          }
-          cfg.uses![ssa]?.remove(spec);
-        }
-      }
 
       final bdefines = cfg.blockDefines![blockId];
       if (bdefines != null) {
