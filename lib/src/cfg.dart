@@ -112,7 +112,7 @@ class ControlFlowGraph {
     uses = {};
     blockDefines = {};
     maxVersions = {};
-    _ssaGraph = Graph<SpecifiedOperation, void>.directed();
+    _ssaGraph = null;
     for (final blockId in graph.vertices) {
       for (final op in _ids[blockId]!.code) {
         final spec = SpecifiedOperation(blockId, op);
@@ -130,14 +130,6 @@ class ControlFlowGraph {
         }
         for (final input in op.readsFrom) {
           uses!.putIfAbsent(input, () => Set.identity()).add(spec);
-        }
-      }
-    }
-    for (final entry in uses!.entries) {
-      final definition = defines![entry.key];
-      if (definition != null) {
-        for (final use in entry.value) {
-          _ssaGraph!.addEdge(definition, use);
         }
       }
     }
@@ -256,8 +248,8 @@ class ControlFlowGraph {
     if (!override) invalidate();
   }
 
-  /// Invalidate all internal caches. This is necessary if you modify the graph
-  /// directly.
+  /// Invalidates control-flow analyses after directly modifying the graph.
+  /// After rewriting SSA operations, use [refreshSSA] to rebuild their indices.
   void invalidate() {
     _globals = null;
     _dominators = null;
@@ -372,15 +364,19 @@ class ControlFlowGraph {
         blockDefines!, uses!, dominators, mergeSets);
   }
 
-  /// SSA graph. Only available after converting to SSA form.
+  /// Cached def-use graph, built on first access after converting to SSA form.
+  /// Reacquire this view after refreshing or changing SSA metadata.
   Graph<SpecifiedOperation, void> get ssaGraph {
     if (!inSSAForm) {
       throw StateError('Cannot access SSA graph before converting to SSA form');
     }
-    return _ssaGraph!;
+    return _ssaGraph ??= buildSSAUseGraph(defines!, uses!);
   }
 
   Graph<SpecifiedOperation, void>? _ssaGraph;
+
+  /// Discards the cached edge view after updating [defines] or [uses].
+  void invalidateSSAEdges() => _ssaGraph = null;
 
   final Map<int, Set<int>> _liveoutMsCache = {};
 
@@ -423,7 +419,7 @@ class ControlFlowGraph {
     blockDefines = ssaData.blockDefines;
     defines = ssaData.defines;
     uses = ssaData.uses;
-    _ssaGraph = ssaData.ssaGraph;
+    _ssaGraph = null;
     maxVersions = ssaData.definitions;
 
     _inSSAForm = true;

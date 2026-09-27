@@ -142,7 +142,6 @@ SSAComputationData semiPrunedSSARename(
   final blockDefines = <int, Set<SSA>>{};
   final defines = <SSA, SpecifiedOperation>{};
   final uses = <SSA, Set<SpecifiedOperation>>{};
-  final ssaGraph = Graph<SpecifiedOperation, void>.directed();
   final dominators = computeDominators(graph, root);
   final children = <int, List<int>>{};
   for (final entry in dominators.entries) {
@@ -247,16 +246,8 @@ SSAComputationData semiPrunedSSARename(
       }
     }
   }
-  for (final entry in uses.entries) {
-    final definition = defines[entry.key];
-    if (definition != null) {
-      for (final use in entry.value) {
-        ssaGraph.addEdge(definition, use);
-      }
-    }
-  }
 
-  return SSAComputationData(ssaGraph, blockDefines, defines, uses, {
+  return SSAComputationData(null, blockDefines, defines, uses, {
     for (final entry in nextVersions.entries) entry.key: entry.value + 1,
   });
 }
@@ -361,12 +352,33 @@ SSA findVariableInSSAGraph(
 }
 
 class SSAComputationData {
-  final Graph<SpecifiedOperation, void> ssaGraph;
+  Graph<SpecifiedOperation, void>? _ssaGraph;
+
+  /// Def-use edges are materialized only when requested.
+  Graph<SpecifiedOperation, void> get ssaGraph =>
+      _ssaGraph ??= buildSSAUseGraph(defines, uses);
   final Map<int, Set<SSA>> blockDefines;
   final Map<SSA, SpecifiedOperation> defines;
   final Map<SSA, Set<SpecifiedOperation>> uses;
   Map<String, int> definitions;
 
-  SSAComputationData(this.ssaGraph, this.blockDefines, this.defines, this.uses,
-      this.definitions);
+  SSAComputationData(Graph<SpecifiedOperation, void>? graph, this.blockDefines,
+      this.defines, this.uses, this.definitions)
+      : _ssaGraph = graph;
+}
+
+/// Builds the graph view of the indexed SSA definitions and uses.
+Graph<SpecifiedOperation, void> buildSSAUseGraph(
+  Map<SSA, SpecifiedOperation> defines,
+  Map<SSA, Set<SpecifiedOperation>> uses,
+) {
+  final graph = Graph<SpecifiedOperation, void>.directed();
+  for (final entry in uses.entries) {
+    final definition = defines[entry.key];
+    if (definition == null) continue;
+    for (final use in entry.value) {
+      graph.addEdge(definition, use);
+    }
+  }
+  return graph;
 }

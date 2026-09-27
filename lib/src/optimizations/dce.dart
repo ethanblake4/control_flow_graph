@@ -28,7 +28,7 @@ void removeUnusedSSADefines(
       for (final input in spec.op.readsFrom) {
         cfg.uses![input]?.remove(spec);
       }
-      cfg.ssaGraph.removeVertex(spec);
+      cfg.invalidateSSAEdges();
       cfg.defines!.remove(value);
       cfg.blockDefines![spec.blockId]?.remove(value);
       cfg.uses!.remove(value);
@@ -66,7 +66,7 @@ void trimBlocks(ControlFlowGraph cfg) {
           final spec = SpecifiedOperation(blockId, op);
           final defSpec = cfg.defines![ssa];
           if (defSpec != null) {
-            cfg.ssaGraph.removeEdge(defSpec, spec);
+            cfg.invalidateSSAEdges();
           }
           cfg.uses![ssa]?.remove(spec);
         }
@@ -75,8 +75,8 @@ void trimBlocks(ControlFlowGraph cfg) {
       final bdefines = cfg.blockDefines![blockId];
       if (bdefines != null) {
         for (final define in bdefines) {
-          final d = cfg.defines!.remove(define)!;
-          cfg.ssaGraph.removeVertex(d);
+          cfg.defines!.remove(define);
+          cfg.invalidateSSAEdges();
         }
       }
     }
