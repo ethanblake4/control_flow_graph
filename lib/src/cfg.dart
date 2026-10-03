@@ -547,57 +547,7 @@ class ControlFlowGraph {
       throw StateError(
           'Cannot allocate registers before converting to SSA form');
     }
-    // Phi removal creates multiple definitions and may split edges. Compute
-    // ordinary liveness from the lowered code rather than stale SSA caches.
-    final liveIn = <int, Set<SSA>>{};
-    final liveOut = <int, Set<SSA>>{};
-    final localUses = <int, Set<SSA>>{};
-    final localDefs = <int, Set<SSA>>{};
-    final distances = <int, Map<SSA, SplayTreeSet<int>>>{};
-    for (final id in graph.vertices) {
-      liveIn[id] = {};
-      liveOut[id] = {};
-      final reads = localUses[id] = <SSA>{};
-      final writes = localDefs[id] = <SSA>{};
-      final uses = distances[id] = {};
-      final code = _ids[id]!.code;
-      for (var index = 0; index < code.length; index++) {
-        final op = code[index];
-        final inputs = op is SpillNode ? {op.target} : op.readsFrom;
-        for (final input in inputs) {
-          if (input.name.startsWith('@')) continue;
-          if (!writes.contains(input)) reads.add(input);
-          uses.putIfAbsent(input, () => SplayTreeSet<int>()).add(index);
-        }
-        final output = op is ReloadNode ? op.target : op.writesTo;
-        if (output != null && !output.name.startsWith('@')) {
-          writes.add(output);
-        }
-      }
-    }
-    bool changed;
-    do {
-      changed = false;
-      for (final id in graph.vertices.toList().reversed) {
-        final outgoing = <SSA>{
-          for (final next in graph.successorsOf(id)) ...liveIn[next]!
-        };
-        final incoming = {
-          ...localUses[id]!,
-          ...outgoing.difference(localDefs[id]!)
-        };
-        if (outgoing.length != liveOut[id]!.length ||
-            !outgoing.containsAll(liveOut[id]!) ||
-            incoming.length != liveIn[id]!.length ||
-            !incoming.containsAll(liveIn[id]!)) {
-          liveOut[id] = outgoing;
-          liveIn[id] = incoming;
-          changed = true;
-        }
-      }
-    } while (changed);
-    regalloc_new.allocateRegisters(graph, root.id!, _ids, regTypes, opCreators,
-        liveIn, liveOut, distances);
+    regalloc_new.allocateRegisters(graph, root.id!, _ids, regTypes, opCreators);
   }
 
   /// Assembles the post-register-allocation IR into concrete [Instruction]

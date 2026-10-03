@@ -20,15 +20,8 @@ import 'package:more/more.dart';
 /// [opCreators] maps each [Operation] runtime type to its [InstructionCreator],
 /// whose [Variant]s describe the physical-register constraints (slot numbers
 /// *are* the physical register indices).
-void allocateRegisters(
-    CFG graph,
-    int root,
-    Map<int, BasicBlock> blocks,
-    Map<int, RegType> regTypes,
-    Map<Type, InstructionCreator> opCreators,
-    Map<int, Set<SSA>> liveIn,
-    Map<int, Set<SSA>> liveOut,
-    Map<int, Map<SSA, SplayTreeSet<int>>> nextUseDistances) {
+void allocateRegisters(CFG graph, int root, Map<int, BasicBlock> blocks,
+    Map<int, RegType> regTypes, Map<Type, InstructionCreator> opCreators) {
   final constrained = blocks.values.expand((block) => block.code).any((op) {
     final creator = opCreators[op.runtimeType];
     return op is RegisterInput ||
@@ -39,14 +32,59 @@ void allocateRegisters(
     allocateConstrained(graph, root, blocks, regTypes, opCreators);
     return;
   }
+  // Phi removal creates multiple definitions and may split edges. Compute
+  // ordinary liveness from the lowered code rather than stale SSA caches.
+  final liveIn = <int, Set<SSA>>{};
+  final liveOut = <int, Set<SSA>>{};
+  final localUses = <int, Set<SSA>>{};
+  final localDefs = <int, Set<SSA>>{};
+  final distances = <int, Map<SSA, SplayTreeSet<int>>>{};
+  for (final id in graph.vertices) {
+    liveIn[id] = {};
+    liveOut[id] = {};
+    final reads = localUses[id] = <SSA>{};
+    final writes = localDefs[id] = <SSA>{};
+    final uses = distances[id] = {};
+    final code = blocks[id]!.code;
+    for (var index = 0; index < code.length; index++) {
+      final op = code[index];
+      final inputs = op is SpillNode ? {op.target} : op.readsFrom;
+      for (final input in inputs) {
+        if (input.name.startsWith('@')) continue;
+        if (!writes.contains(input)) reads.add(input);
+        uses.putIfAbsent(input, () => SplayTreeSet<int>()).add(index);
+      }
+      final output = op is ReloadNode ? op.target : op.writesTo;
+      if (output != null && !output.name.startsWith('@')) {
+        writes.add(output);
+      }
+    }
+  }
+  bool changed;
+  do {
+    changed = false;
+    for (final id in graph.vertices.toList().reversed) {
+      final outgoing = <SSA>{
+        for (final next in graph.successorsOf(id)) ...liveIn[next]!
+      };
+      final incoming = {
+        ...localUses[id]!,
+        ...outgoing.difference(localDefs[id]!)
+      };
+      if (outgoing.length != liveOut[id]!.length ||
+          !outgoing.containsAll(liveOut[id]!) ||
+          incoming.length != liveIn[id]!.length ||
+          !incoming.containsAll(liveIn[id]!)) {
+        liveOut[id] = outgoing;
+        liveIn[id] = incoming;
+        changed = true;
+      }
+    }
+  } while (changed);
+
   // Process blocks in reverse post-order so every forward edge is visited
   // before its target block.
   final rpo = graph.depthFirstPostOrder(root).toList().reversed.toList();
-
-  // The caller's liveIn/liveOut are computed on the current post-phi-removal
-  // operations (SpillNode/ReloadNode aware, '@'-sentinels excluded) — reuse
-  // them rather than running a second identical dataflow fixpoint.
-  final freshLiveIn = liveIn;
 
   final blockEntryState = <int, _RegState>{};
   final blockExitState = <int, _RegState>{};
@@ -54,14 +92,14 @@ void allocateRegisters(
   for (final blockId in rpo) {
     final block = blocks[blockId]!;
     final preds = graph.predecessorsOf(blockId).toList();
-    final live = freshLiveIn[blockId] ?? const {};
+    final live = liveIn[blockId] ?? const {};
 
     final entry = _buildEntryState(preds, blockExitState, live, regTypes);
     // Save a snapshot BEFORE _allocateBlock mutates entry in-place.
     blockEntryState[blockId] = entry.copy();
 
     _allocateBlock(block, entry, regTypes, opCreators,
-        liveOut[blockId] ?? const {}, nextUseDistances[blockId] ?? const {});
+        liveOut[blockId] ?? const {}, distances[blockId] ?? const {});
 
     blockExitState[blockId] = entry.copy();
   }
@@ -72,7 +110,7 @@ void allocateRegisters(
   // the latch's tail so that the loop header's entry expectations are met.
   for (final blockId in rpo) {
     final entryState = blockEntryState[blockId]!;
-    final live = freshLiveIn[blockId] ?? const {};
+    final live = liveIn[blockId] ?? const {};
     for (final predId in graph.predecessorsOf(blockId)) {
       final predExit = blockExitState[predId];
       if (predExit == null) continue;
