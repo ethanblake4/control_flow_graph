@@ -3,6 +3,7 @@ import 'package:control_flow_graph/control_flow_graph.dart';
 void insertPhiNodesInto(Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
     Map<int, Set<int>> mergeSets) {
   final phiNodes = <int, Set<(String, int)>>{};
+  final pending = <(int, (String, int))>[];
 
   for (var sourceBlock in mergeSets.keys) {
     final assignments = <(String, int)>{};
@@ -13,11 +14,18 @@ void insertPhiNodesInto(Map<int, BasicBlock> ids, Map<String, Set<int>> globals,
         assignments.add((writesTo.name, writesTo.type));
       }
     }
-    for (var targetBlock in mergeSets[sourceBlock]!) {
-      for (var assignment in assignments) {
-        phiNodes
-            .putIfAbsent(targetBlock, () => <(String, int)>{})
-            .add(assignment);
+    for (final assignment in assignments) {
+      pending.add((sourceBlock, assignment));
+    }
+  }
+
+  // A phi defines a value too. Propagate its definition through merge sets
+  // until joins of joins, including exits shared by separate loops, agree.
+  for (var index = 0; index < pending.length; index++) {
+    final (sourceBlock, assignment) = pending[index];
+    for (final targetBlock in mergeSets[sourceBlock] ?? const <int>{}) {
+      if (phiNodes.putIfAbsent(targetBlock, () => {}).add(assignment)) {
+        pending.add((targetBlock, assignment));
       }
     }
   }

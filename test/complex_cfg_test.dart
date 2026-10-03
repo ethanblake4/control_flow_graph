@@ -78,6 +78,66 @@ void main() {
       expect(cfg.ssaGraph.vertices, isNotEmpty);
     });
 
+    test('SSA propagates loop phis to a shared branch-selected exit', () {
+      final entry = BasicBlock<Operation>([
+        LoadImmediate(SSA('left'), 0),
+        LoadImmediate(SSA('right'), 10),
+        LoadImmediate(SSA('step'), 1),
+      ], label: 'entry');
+      final leftHeader = BasicBlock<Operation>([], label: 'leftHeader');
+      final leftBody = BasicBlock<Operation>([
+        Add(SSA('left'), SSA('left'), SSA('step')),
+      ], label: 'leftBody');
+      final leftExit = BasicBlock<Operation>([], label: 'leftExit');
+      final rightHeader = BasicBlock<Operation>([], label: 'rightHeader');
+      final rightBody = BasicBlock<Operation>([
+        Add(SSA('right'), SSA('right'), SSA('step')),
+      ], label: 'rightBody');
+      final rightExit = BasicBlock<Operation>([], label: 'rightExit');
+      final exit = BasicBlock<Operation>([
+        Add(SSA('observedRight'), SSA('right'), SSA('right')),
+        Return(SSA('left')),
+      ], label: 'exit');
+      final cfg = ControlFlowGraph()..append(entry);
+      cfg.root = entry;
+      cfg
+        ..link(entry, leftHeader)
+        ..link(entry, rightHeader)
+        ..link(leftHeader, leftBody)
+        ..link(leftHeader, leftExit)
+        ..link(leftBody, leftHeader)
+        ..link(leftExit, exit)
+        ..link(rightHeader, rightBody)
+        ..link(rightHeader, rightExit)
+        ..link(rightBody, rightHeader)
+        ..link(rightExit, exit)
+        ..insertPhiNodes()
+        ..computeSemiPrunedSSA();
+
+      final leftAtHeader = _phiTarget(cfg, 'leftHeader', 'left');
+      final rightAtHeader = _phiTarget(cfg, 'rightHeader', 'right');
+      final leftAtExit = _phiTarget(cfg, 'exit', 'left');
+      final rightAtExit = _phiTarget(cfg, 'exit', 'right');
+      final leftIncoming = cfg['exit']!
+          .code
+          .whereType<PhiNode>()
+          .singleWhere((phi) => phi.target == leftAtExit)
+          .incoming;
+      final rightIncoming = cfg['exit']!
+          .code
+          .whereType<PhiNode>()
+          .singleWhere((phi) => phi.target == rightAtExit)
+          .incoming;
+
+      expect(leftIncoming[cfg.labels['leftExit']], leftAtHeader);
+      expect(leftIncoming[cfg.labels['rightExit']]!.name, 'left');
+      expect(leftIncoming[cfg.labels['rightExit']], isNot(leftAtExit));
+      expect(rightIncoming[cfg.labels['rightExit']], rightAtHeader);
+      expect(rightIncoming[cfg.labels['leftExit']]!.name, 'right');
+      expect(rightIncoming[cfg.labels['leftExit']], isNot(rightAtExit));
+      expect(cfg['exit']!.code.whereType<Return>().single.value, leftAtExit);
+    });
+
     test('copy propagation removes aliases and DCE respects effectful loads',
         () {
       final cfg = _optimizedComplexGraph(removeEmptyBlocks: false);
