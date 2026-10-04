@@ -31,6 +31,26 @@ class MutableRead extends Operation {
 }
 
 void main() {
+  test('deferred metadata refresh composes with dead-code removal', () {
+    final block = BasicBlock<Operation>([
+      LoadImmediate(SSA('x'), 1),
+      LoadImmediate(SSA('y'), 2),
+      LessThan(SSA('first'), SSA('x'), SSA('y')),
+      LessThan(SSA('second'), SSA('x'), SSA('y')),
+      Return(SSA('second')),
+    ]);
+    final graph = toSSA(ControlFlowGraph.builder().root(block).build());
+
+    eliminateCommonExpressions(graph, expressionKey, refresh: false);
+    graph.removeUnusedDefines();
+
+    expect(block.code.whereType<LessThan>(), hasLength(1));
+    final copy = block.code.whereType<Assign>().single;
+    expect(copy.source, block.code.whereType<LessThan>().single.target);
+    expect(graph.defines![copy.target]!.op, same(copy));
+    validateSSA(graph);
+  });
+
   test('reuses an expression from a dominating block', () {
     final root = BasicBlock<Operation>([
       LoadImmediate(SSA('x'), 1),

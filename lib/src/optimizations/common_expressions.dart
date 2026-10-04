@@ -12,17 +12,21 @@ import '../ssa.dart';
 /// already succeeded. Mutable reads and identity-bearing allocations are not.
 /// The graph must describe normal control flow: exceptional edges out of the
 /// middle of a block do not establish instruction-level dominance.
+/// Set [refresh] to false only when the next pass rebuilds SSA metadata before
+/// inspecting it, such as dead-code removal.
 void eliminateCommonExpressions(
   ControlFlowGraph graph,
-  Object? Function(Operation, SSA Function(SSA)) keyOf,
-) {
+  Object? Function(Operation, SSA Function(SSA)) keyOf, {
+  bool refresh = true,
+}) {
   if (!graph.inSSAForm) {
     throw StateError('Common-expression elimination requires SSA form');
   }
   final available = <Object, SSA>{};
   final copies = <SSA, SSA>{
     for (final id in graph.graph.vertices)
-      for (final op in graph[id]!.code.whereType<Assign>()) op.target: op.source,
+      for (final op in graph[id]!.code.whereType<Assign>())
+        op.target: op.source,
   };
   final tree = graph.dominatorTree;
 
@@ -60,5 +64,5 @@ void eliminateCommonExpressions(
   }
 
   visit(graph.root.id!);
-  graph.refreshSSA();
+  if (refresh) graph.refreshSSA();
 }
