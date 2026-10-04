@@ -72,6 +72,84 @@ void main() {
     expect(cfg.defines, hasLength(1));
   });
 
+  test('caller policy can discard a certified effectful result and its inputs',
+      () {
+    final a = SSA('a'), b = SSA('b');
+    final block = BasicBlock<Operation>([
+      PureValue(a),
+      Effect(b, {a}),
+      Effect(),
+    ]);
+    final cfg = toSSA(block);
+    final retained = block.code.last;
+
+    cfg.removeUnusedDefines(canRemove: (op) => op.writesTo != null);
+
+    expect(block.code, [retained]);
+    expect(cfg.defines, isEmpty);
+    expect(cfg.uses!.values.every((uses) => uses.isEmpty), isTrue);
+  });
+
+  test('long dead chains visit each candidate once and preserve live order',
+      () {
+    const length = 4096;
+    final live = SSA('live');
+    final block = BasicBlock<Operation>([
+      PureValue(live),
+      Effect(null, {live}),
+      for (var i = 0; i < length; i++)
+        PureValue(SSA('dead$i'), i == 0 ? {} : {SSA('dead${i - 1}')}),
+      Effect(null, {live}),
+    ]);
+    final cfg = toSSA(block);
+    final survivors = [block.code.first, block.code[1], block.code.last];
+    var candidates = 0;
+    cfg.removeUnusedDefines(canRemove: (op) {
+      candidates++;
+      return op.isPure;
+    });
+    expect(candidates, length);
+    expect(block.code, orderedEquals(survivors));
+    expect(cfg.defines, hasLength(1));
+    expect(cfg.uses!.values.single, hasLength(2));
+  });
+
+  test('dead phi inputs become unused across blocks', () {
+    final root = BasicBlock<Operation>([PureValue(SSA('a'))]);
+    final end = BasicBlock<Operation>([PureValue(SSA('b'))]);
+    final cfg = ControlFlowGraph.builder().root(root).then(end).build();
+    cfg.insertPhiNodes();
+    cfg.computeSemiPrunedSSA();
+    end.code.add(PhiNode(SSA('phi'), {
+      root.code.single.writesTo!,
+      end.code.single.writesTo!,
+    }));
+
+    cfg.removeUnusedDefines();
+
+    expect(root.code, isEmpty);
+    expect(end.code, isEmpty);
+    expect(cfg.defines, isEmpty);
+    expect(cfg.uses!.values.every((uses) => uses.isEmpty), isTrue);
+    expect(cfg.ssaGraph.vertices, isEmpty);
+  });
+
+  test('unused cycles survive without a removable leaf', () {
+    final cfg = toSSA(BasicBlock<Operation>([]));
+    final a = SSA('a'), b = SSA('b');
+    cfg.root.code.addAll([
+      PureValue(a, {b}),
+      PureValue(b, {a})
+    ]);
+
+    cfg.removeUnusedDefines();
+
+    expect(cfg.root.code, hasLength(2));
+    expect(cfg.defines, hasLength(2));
+    expect(cfg.uses![a], hasLength(1));
+    expect(cfg.uses![b], hasLength(1));
+  });
+
   test('dead-result cleanup reindexes operations replaced after SSA', () {
     final oldValue = SSA('old');
     final replacement = SSA('replacement');

@@ -11,29 +11,45 @@ void removeUnusedSSADefines(
   bool Function(Operation)? canRemove,
 }) {
   cfg.refreshSSA();
-  // Removing a leaf can make its inputs unused, so continue until stable.
-  bool changed;
-  do {
-    changed = false;
-    for (final define in cfg.defines!.entries.toList()) {
-      final value = define.key;
-      final spec = define.value;
-      if (!(canRemove?.call(spec.op) ?? spec.op.isPure) ||
-          value == ControlFlowGraph.branch ||
-          (cfg.uses![value]?.isNotEmpty ?? false)) {
-        continue;
-      }
-      cfg[spec.blockId]!.code.remove(spec.op);
-      for (final input in spec.op.readsFrom) {
-        cfg.uses![input]?.remove(spec);
-      }
-      cfg.invalidateSSAEdges();
-      cfg.defines!.remove(value);
-      cfg.blockDefines![spec.blockId]?.remove(value);
-      cfg.uses!.remove(value);
-      changed = true;
+  final defines = cfg.defines!;
+  final uses = cfg.uses!;
+  final pending = [
+    for (final value in defines.keys)
+      if (value != ControlFlowGraph.branch &&
+          !(uses[value]?.isNotEmpty ?? false))
+        value,
+  ];
+  final removed = <int, Set<Operation>>{};
+  while (pending.isNotEmpty) {
+    final value = pending.removeLast();
+    final spec = defines[value];
+    if (spec == null || !(canRemove?.call(spec.op) ?? spec.op.isPure)) {
+      continue;
     }
-  } while (changed);
+    removed.putIfAbsent(spec.blockId, Set.identity).add(spec.op);
+    defines.remove(value);
+    cfg.blockDefines![spec.blockId]?.remove(value);
+    uses.remove(value);
+    for (final input in spec.op.readsFrom) {
+      final consumers = uses[input];
+      // Only the transition to no consumers can expose another dead result.
+      // Cycles without a dead leaf remain intact, as in the fixed-point pass.
+      if (consumers != null &&
+          consumers.remove(spec) &&
+          consumers.isEmpty &&
+          input != ControlFlowGraph.branch &&
+          defines.containsKey(input)) {
+        pending.add(input);
+      }
+    }
+  }
+  if (removed.isNotEmpty) {
+    cfg.invalidateSSAEdges();
+    for (final entry in removed.entries) {
+      // Compact once per affected block, preserving surviving operation order.
+      cfg[entry.key]!.code.removeWhere(entry.value.contains);
+    }
+  }
 }
 
 void trimBlocks(ControlFlowGraph cfg) {
